@@ -311,6 +311,11 @@ def translate_response(jc_resp: Dict[str, Any], req_model: str) -> Dict[str, Any
     content: List[Dict[str, Any]] = []
     stop_reason = "end_turn"
 
+    # Handle reasoning_content → thinking block
+    reasoning = msg.get("reasoning_content", "")
+    if reasoning:
+        content.append({"type": "thinking", "thinking": reasoning})
+
     # Handle tool_calls
     tool_calls = msg.get("tool_calls") or []
     if tool_calls:
@@ -393,6 +398,8 @@ async def _handle_stream(client: Client, req: Dict[str, Any]) -> StreamingRespon
         # Accumulator for in-progress tool calls: index -> {id, name, arguments}
         tool_calls_acc: Dict[int, Dict[str, str]] = {}
         current_block_index = 0
+
+        thinking_block_started = False
         text_block_started = False
         tool_block_started: Dict[int, bool] = {}
 
@@ -403,7 +410,6 @@ async def _handle_stream(client: Client, req: Dict[str, Any]) -> StreamingRespon
             if isinstance(line, bytes):
                 line = line.decode("utf-8", errors="replace")
 
-            # Strip "data: " prefix
             if line.startswith("data: "):
                 line = line[len("data: "):]
             line = line.strip()
@@ -420,6 +426,22 @@ async def _handle_stream(client: Client, req: Dict[str, Any]) -> StreamingRespon
                 continue
             choice = choices[0]
             delta = choice.get("delta", {})
+
+            # ---- Process reasoning_content → thinking block ----
+            reasoning_text = delta.get("reasoning_content", "")
+            if reasoning_text:
+                if not thinking_block_started:
+                    thinking_block_started = True
+                    yield _sse_event("content_block_start", {
+                        "type": "content_block_start",
+                        "index": current_block_index,
+                        "content_block": {"type": "thinking", "thinking": ""},
+                    })
+                yield _sse_event("content_block_delta", {
+                    "type": "content_block_delta",
+                    "index": current_block_index,
+                    "delta": {"type": "thinking_delta", "thinking": reasoning_text},
+                })
 
             # ---- Process tool_calls deltas ----
             for tc in delta.get("tool_calls") or []:
@@ -440,7 +462,13 @@ async def _handle_stream(client: Client, req: Dict[str, Any]) -> StreamingRespon
                     acc["arguments"] += fn["arguments"]
 
                 if not tool_block_started.get(idx):
-                    # Close any open text block first
+                    if thinking_block_started:
+                        yield _sse_event("content_block_stop", {
+                            "type": "content_block_stop",
+                            "index": current_block_index,
+                        })
+                        current_block_index += 1
+                        thinking_block_started = False
                     if text_block_started:
                         yield _sse_event("content_block_stop", {
                             "type": "content_block_stop",
@@ -467,6 +495,14 @@ async def _handle_stream(client: Client, req: Dict[str, Any]) -> StreamingRespon
             text = delta.get("content", "")
             if text:
                 if not text_block_started:
+                    if thinking_block_started:
+                        yield _sse_event("content_block_stop", {
+                            "type": "content_block_stop",
+                            "index": current_block_index,
+                        })
+                        current_block_index += 1
+                        thinking_block_started = False
+
                     text_block_started = True
                     yield _sse_event("content_block_start", {
                         "type": "content_block_start",
@@ -483,7 +519,14 @@ async def _handle_stream(client: Client, req: Dict[str, Any]) -> StreamingRespon
             # ---- Handle finish ----
             finish_reason = choice.get("finish_reason")
             if finish_reason is not None:
-                # Close any open text block
+                if thinking_block_started:
+                    yield _sse_event("content_block_stop", {
+                        "type": "content_block_stop",
+                        "index": current_block_index,
+                    })
+                    current_block_index += 1
+                    thinking_block_started = False
+
                 if text_block_started:
                     yield _sse_event("content_block_stop", {
                         "type": "content_block_stop",
@@ -492,7 +535,6 @@ async def _handle_stream(client: Client, req: Dict[str, Any]) -> StreamingRespon
                     current_block_index += 1
                     text_block_started = False
 
-                # Close and flush tool call blocks with input_json_delta
                 for i in range(len(tool_calls_acc)):
                     if tool_block_started.get(i):
                         tc = tool_calls_acc[i]

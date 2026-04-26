@@ -180,3 +180,20 @@ func (c *Client) Rerank(query string, documents []string, topN int) (map[string]
 func (c *Client) UserInfo() (map[string]interface{}, error) {
 	return c.Post("/api/saas/user/v1/userInfo", map[string]interface{}{})
 }
+
+// Validate checks that the current credentials are valid by calling UserInfo.
+func (c *Client) Validate() error {
+	resp, err := c.UserInfo()
+	if err != nil {
+		return fmt.Errorf("credential validation failed: %w", err)
+	}
+	code, ok := resp["code"].(float64)
+	if !ok || code != 0 {
+		msg, _ := resp["msg"].(string)
+		if msg == "" {
+			msg = "unknown error"
+		}
+		return fmt.Errorf("credential validation failed (code=%.0f): %s", code, msg)
+	}
+	return nil
+}

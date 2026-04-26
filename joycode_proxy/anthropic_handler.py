@@ -1,4 +1,5 @@
 import json
+import logging
 import uuid
 from typing import Any, Dict, List, Optional
 
@@ -6,6 +7,8 @@ from fastapi import APIRouter, Request
 from fastapi.responses import JSONResponse, StreamingResponse
 
 from joycode_proxy.client import CHAT_ENDPOINT, Client, MODELS
+
+log = logging.getLogger("joycode-proxy.anthropic")
 
 # ---------------------------------------------------------------------------
 # Model mapping: Claude model name -> JoyCode model ID
@@ -604,22 +607,25 @@ def create_anthropic_router(client: Client) -> APIRouter:
     @router.post("/v1/messages")
     async def handle_messages(request: Request):  # type: ignore[return]
         body = await request.json()
+        log.debug("POST /v1/messages model=%s stream=%s tools=%d",
+                  body.get("model"), body.get("stream"), len(body.get("tools", [])))
 
-        # Ensure max_tokens has a sensible default
         if not body.get("max_tokens"):
             body["max_tokens"] = 8192
 
         if body.get("stream"):
             return await _handle_stream(client, body)
 
-        # Non-streaming path
         jc_body = translate_request(body)
         try:
             jc_resp = client.post(CHAT_ENDPOINT, jc_body)
         except Exception as exc:
+            log.error("JoyCode API error: %s", exc)
             return _error_response(500, str(exc))
 
         resp = translate_response(jc_resp, body.get("model", ""))
+        log.debug("Response: stop_reason=%s content_blocks=%d",
+                  resp.get("stop_reason"), len(resp.get("content", [])))
         return JSONResponse(content=resp)
 
     return router

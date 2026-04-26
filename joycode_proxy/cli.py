@@ -40,12 +40,16 @@ def _resolve_client(ptkey: str, userid: str, skip_validation: bool = False):
 @click.option("-k", "--ptkey", default="", help="JoyCode ptKey (auto-detected if empty)")
 @click.option("-u", "--userid", default="", help="JoyCode userID (auto-detected if empty)")
 @click.option("--skip-validation", is_flag=True, help="Skip credential validation")
+@click.option("-v", "--verbose", is_flag=True, help="Enable debug logging")
 @click.pass_context
-def cli(ctx, ptkey: str, userid: str, skip_validation: bool):
+def cli(ctx, ptkey: str, userid: str, skip_validation: bool, verbose: bool):
     ctx.ensure_object(dict)
     ctx.obj["ptkey"] = ptkey
     ctx.obj["userid"] = userid
     ctx.obj["skip_validation"] = skip_validation
+    ctx.obj["verbose"] = verbose
+    level = logging.DEBUG if verbose else logging.INFO
+    logging.basicConfig(level=level, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
 
 
 @cli.command()
@@ -68,7 +72,8 @@ def serve(ctx, host: str, port: int):
     click.echo("  Claude Code setup:")
     click.echo(f"    export ANTHROPIC_BASE_URL=http://{host}:{port}")
     click.echo("    export ANTHROPIC_API_KEY=joycode")
-    uvicorn.run(app, host=host, port=port, log_level="info")
+    log_level = "debug" if ctx.obj.get("verbose") else "info"
+    uvicorn.run(app, host=host, port=port, log_level=log_level)
 
 
 @cli.command()

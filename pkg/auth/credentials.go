@@ -27,23 +27,23 @@ type stateData struct {
 // LoadFromSystem reads ptKey from local JoyCode state database (macOS).
 func LoadFromSystem() (*Credentials, error) {
 	if runtime.GOOS != "darwin" {
-		return nil, fmt.Errorf("auto credential extraction only supported on macOS")
+		return nil, fmt.Errorf("auto credential extraction only supported on macOS; on other systems, please provide --ptkey and --userid flags")
 	}
 	home, err := os.UserHomeDir()
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("cannot determine home directory: %w", err)
 	}
 	dbPath := filepath.Join(home,
 		"Library", "Application Support",
 		"JoyCode", "User", "globalStorage", "state.vscdb")
 
 	if _, err := os.Stat(dbPath); os.IsNotExist(err) {
-		return nil, fmt.Errorf("JoyCode state database not found: %s", dbPath)
+		return nil, fmt.Errorf("JoyCode state database not found at %s\n  Please install and log in to JoyCode IDE first", dbPath)
 	}
 
-	db, err := sql.Open("sqlite3", dbPath)
+	db, err := sql.Open("sqlite3", dbPath+"?mode=ro")
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("cannot open JoyCode database: %w", err)
 	}
 	defer db.Close()
 
@@ -51,15 +51,18 @@ func LoadFromSystem() (*Credentials, error) {
 	if err := db.QueryRow(
 		"SELECT value FROM ItemTable WHERE key='JoyCoder.IDE'",
 	).Scan(&value); err != nil {
-		return nil, fmt.Errorf("login info not found, please log in to JoyCode first")
+		return nil, fmt.Errorf("login info not found in database\n  Please log in to JoyCode IDE first")
 	}
 
 	var data stateData
 	if err := json.Unmarshal([]byte(value), &data); err != nil {
-		return nil, err
+		return nil, fmt.Errorf("cannot parse login data from database: %w", err)
 	}
 	if data.JoyCoderUser.PtKey == "" {
-		return nil, fmt.Errorf("ptKey is empty, please re-login to JoyCode")
+		return nil, fmt.Errorf("ptKey is empty in stored credentials\n  Please re-login to JoyCode IDE")
+	}
+	if data.JoyCoderUser.UserID == "" {
+		return nil, fmt.Errorf("userId is empty in stored credentials\n  Please re-login to JoyCode IDE")
 	}
 	return &Credentials{
 		PtKey:  data.JoyCoderUser.PtKey,

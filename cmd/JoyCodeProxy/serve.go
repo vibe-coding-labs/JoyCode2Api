@@ -1,9 +1,11 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"io/fs"
 	"log"
 	"log/slog"
@@ -11,6 +13,7 @@ import (
 	"os"
 	"os/signal"
 	"strings"
+	"sync/atomic"
 	"syscall"
 	"time"
 
@@ -23,8 +26,9 @@ import (
 )
 
 var (
-	serveHost string
-	servePort int
+	serveHost       string
+	servePort       int
+	requestCounter uint64
 )
 
 var serveCmd = &cobra.Command{
@@ -67,6 +71,9 @@ var serveCmd = &cobra.Command{
 					log.Printf("Migrated %d request logs to account %q", n, accounts[0].APIKey)
 				}
 			}
+		}
+		if n, err := s.MigrateTokenLogs(); err == nil && n > 0 {
+			log.Printf("Migrated %d token-based request logs to account api_keys", n)
 		}
 
 		srv := openai.NewServer(client)
@@ -191,10 +198,25 @@ func loggingMiddleware(next http.Handler) http.Handler {
 func requestLogMiddleware(next http.Handler, s *store.Store) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		start := time.Now()
+
+		// Peek at body to extract model before handler consumes it
+		var model string
+		if r.Method == "POST" && r.Body != nil {
+			bodyBytes, _ := io.ReadAll(io.LimitReader(r.Body, 1<<20))
+			r.Body.Close()
+			r.Body = io.NopCloser(bytes.NewReader(bodyBytes))
+			var body map[string]interface{}
+			if json.Unmarshal(bodyBytes, &body) == nil {
+				if m, ok := body["model"].(string); ok {
+					model = m
+				}
+			}
+		}
+
 		rw := &responseWriter{ResponseWriter: w, statusCode: 200}
 		next.ServeHTTP(rw, r)
 
-		// Log /v1/ and /api/ requests
+		// Log /v1/ requests
 		path := r.URL.Path
 		if strings.HasPrefix(path, "/v1/") {
 			apiKey := r.Header.Get("x-api-key")
@@ -204,39 +226,37 @@ func requestLogMiddleware(next http.Handler, s *store.Store) http.Handler {
 					apiKey = strings.TrimPrefix(apiKey, "Bearer ")
 				}
 			}
-			if apiKey == "" {
-				// Use default account
-				if a, _ := s.GetDefaultAccount(); a != nil {
-					apiKey = a.APIKey
+			if apiKey != "" {
+				if account, _ := s.GetAccountByToken(apiKey); account != nil {
+					apiKey = account.APIKey
 				}
 			}
-
-			model := ""
-			contentType := r.Header.Get("Content-Type")
-			if strings.Contains(contentType, "json") && r.Method == "POST" && r.Body != nil {
-				var body map[string]interface{}
-				r.Body = http.MaxBytesReader(w, r.Body, 1<<20) // 1MB limit
-				json.NewDecoder(r.Body).Decode(&body)
-				if m, ok := body["model"].(string); ok {
-					model = m
+			if apiKey == "" {
+				if a, _ := s.GetDefaultAccount(); a != nil {
+					apiKey = a.APIKey
 				}
 			}
 
 			isStream := r.URL.Query().Get("stream") != "" || path == "/v1/messages"
 			latency := time.Since(start).Milliseconds()
 
+			var errMsg string
 			if rw.statusCode >= 400 {
+				reqID := atomic.AddUint64(&requestCounter, 1)
+				errMsg = fmt.Sprintf("HTTP %d on %s %s", rw.statusCode, r.Method, path)
 				slog.Error("proxy error response",
+					"request_id", reqID,
 					"status", rw.statusCode,
 					"method", r.Method,
 					"path", path,
 					"model", model,
 					"latency_ms", latency,
 					"api_key", apiKey,
+					"error", errMsg,
 				)
 			}
 
-			go s.LogRequest(apiKey, model, path, isStream, rw.statusCode, latency)
+			go s.LogRequest(apiKey, model, path, isStream, rw.statusCode, latency, errMsg)
 		}
 	})
 }

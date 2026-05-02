@@ -301,7 +301,7 @@ func TestHandleStatsWithLogs(t *testing.T) {
 	h.RegisterRoutes(mux)
 
 	s.AddAccount("key1", "pt1", "user1", true, "")
-	s.LogRequest("key1", "JoyAI-Code", "/v1/chat", true, 200, 500)
+	s.LogRequest("key1", "JoyAI-Code", "/v1/chat", true, 200, 500, "")
 
 	req := httptest.NewRequest("GET", "/api/stats", nil)
 	w := httptest.NewRecorder()
@@ -378,8 +378,8 @@ func TestHandleAccountStats(t *testing.T) {
 	h.RegisterRoutes(mux)
 
 	s.AddAccount("key1", "pt1", "user1", true, "")
-	s.LogRequest("key1", "JoyAI-Code", "/v1/chat", true, 200, 500)
-	s.LogRequest("key1", "GLM-5.1", "/v1/msg", false, 200, 300)
+	s.LogRequest("key1", "JoyAI-Code", "/v1/chat", true, 200, 500, "")
+	s.LogRequest("key1", "GLM-5.1", "/v1/msg", false, 200, 300, "")
 
 	req := httptest.NewRequest("GET", "/api/accounts/key1/stats", nil)
 	w := httptest.NewRecorder()

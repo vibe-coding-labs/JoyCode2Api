@@ -8,6 +8,7 @@ import (
 	"encoding/hex"
 	"fmt"
 	"io"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"sync"
@@ -44,6 +45,9 @@ type Stats struct {
 	TotalRequests int            `json:"total_requests"`
 	AccountsCount int            `json:"accounts_count"`
 	AvgLatencyMs  float64        `json:"avg_latency_ms"`
+	ErrorCount    int            `json:"error_count"`
+	StreamCount   int            `json:"stream_count"`
+	SuccessCount  int            `json:"success_count"`
 	ByModel       []ModelCount   `json:"by_model"`
 	ByAccount     []AccountCount `json:"by_account"`
 }
@@ -74,14 +78,15 @@ type EndpointCount struct {
 }
 
 type RequestLog struct {
-	ID         int64  `json:"id"`
-	APIKey     string `json:"api_key"`
-	Model      string `json:"model"`
-	Endpoint   string `json:"endpoint"`
-	Stream     bool   `json:"stream"`
-	StatusCode int    `json:"status_code"`
-	LatencyMs  int64  `json:"latency_ms"`
-	CreatedAt  string `json:"created_at"`
+	ID           int64  `json:"id"`
+	APIKey       string `json:"api_key"`
+	Model        string `json:"model"`
+	Endpoint     string `json:"endpoint"`
+	Stream       bool   `json:"stream"`
+	StatusCode   int    `json:"status_code"`
+	LatencyMs    int64  `json:"latency_ms"`
+	ErrorMessage string `json:"error_message"`
+	CreatedAt    string `json:"created_at"`
 }
 
 type Store struct {
@@ -189,6 +194,9 @@ func (s *Store) migrate() error {
 		return err
 	}
 
+	// Migration: add error_message column to request_logs
+	s.db.Exec("ALTER TABLE request_logs ADD COLUMN error_message TEXT DEFAULT ''")
+
 	// Migration: add api_token column to existing DBs
 	s.db.Exec("ALTER TABLE accounts ADD COLUMN api_token TEXT NOT NULL DEFAULT ''")
 
@@ -266,6 +274,7 @@ func (s *Store) AddAccount(apiKey, ptKey, userID string, isDefault bool, default
 
 	encPtKey, err := s.encrypt(ptKey)
 	if err != nil {
+		slog.Error("store: encrypt pt_key failed", "api_key", apiKey, "error", err)
 		return fmt.Errorf("encrypt pt_key: %w", err)
 	}
 
@@ -283,12 +292,17 @@ func (s *Store) AddAccount(apiKey, ptKey, userID string, isDefault bool, default
 		"INSERT OR REPLACE INTO accounts (api_key, api_token, pt_key, user_id, is_default, default_model) VALUES (?, ?, ?, ?, ?, ?)",
 		apiKey, token, encPtKey, userID, def, defaultModel,
 	)
-	return err
+	if err != nil {
+		slog.Error("store: add account failed", "api_key", apiKey, "error", err)
+		return err
+	}
+	return nil
 }
 
 func (s *Store) ListAccounts() ([]AccountInfo, error) {
 	rows, err := s.db.Query("SELECT api_key, api_token, user_id, is_default, default_model, created_at FROM accounts ORDER BY created_at")
 	if err != nil {
+		slog.Error("store: list accounts query failed", "error", err)
 		return nil, err
 	}
 	defer rows.Close()
@@ -298,6 +312,7 @@ func (s *Store) ListAccounts() ([]AccountInfo, error) {
 		var a AccountInfo
 		var isDef int
 		if err := rows.Scan(&a.APIKey, &a.APIToken, &a.UserID, &isDef, &a.DefaultModel, &a.CreatedAt); err != nil {
+			slog.Error("store: list accounts scan failed", "error", err)
 			return nil, err
 		}
 		a.IsDefault = isDef == 1
@@ -318,11 +333,13 @@ func (s *Store) GetAccount(apiKey string) (*Account, error) {
 		return nil, nil
 	}
 	if err != nil {
+		slog.Error("store: get account query failed", "api_key", apiKey, "error", err)
 		return nil, err
 	}
 
 	ptKey, err := s.decrypt(encPtKey)
 	if err != nil {
+		slog.Error("store: decrypt pt_key failed", "api_key", apiKey, "error", err)
 		return nil, fmt.Errorf("decrypt pt_key: %w", err)
 	}
 	a.PtKey = ptKey
@@ -342,11 +359,13 @@ func (s *Store) GetAccountByToken(token string) (*Account, error) {
 		return nil, nil
 	}
 	if err != nil {
+		slog.Error("store: get account by token query failed", "error", err)
 		return nil, err
 	}
 
 	ptKey, err := s.decrypt(encPtKey)
 	if err != nil {
+		slog.Error("store: decrypt pt_key by token failed", "error", err)
 		return nil, fmt.Errorf("decrypt pt_key: %w", err)
 	}
 	a.PtKey = ptKey
@@ -358,6 +377,7 @@ func (s *Store) RenewToken(apiKey string) (string, error) {
 	token := generateToken()
 	_, err := s.db.Exec("UPDATE accounts SET api_token = ?, updated_at = datetime('now') WHERE api_key = ?", token, apiKey)
 	if err != nil {
+		slog.Error("store: renew token failed", "api_key", apiKey, "error", err)
 		return "", err
 	}
 	return token, nil
@@ -373,11 +393,13 @@ func (s *Store) GetDefaultAccount() (*Account, error) {
 		return nil, nil
 	}
 	if err != nil {
+		slog.Error("store: get default account query failed", "error", err)
 		return nil, err
 	}
 
 	ptKey, err := s.decrypt(encPtKey)
 	if err != nil {
+		slog.Error("store: decrypt default account pt_key failed", "error", err)
 		return nil, fmt.Errorf("decrypt pt_key: %w", err)
 	}
 	a.PtKey = ptKey
@@ -387,6 +409,9 @@ func (s *Store) GetDefaultAccount() (*Account, error) {
 
 func (s *Store) RemoveAccount(apiKey string) error {
 	_, err := s.db.Exec("DELETE FROM accounts WHERE api_key = ?", apiKey)
+	if err != nil {
+		slog.Error("store: remove account failed", "api_key", apiKey, "error", err)
+	}
 	return err
 }
 
@@ -396,14 +421,17 @@ func (s *Store) SetDefault(apiKey string) error {
 
 	tx, err := s.db.Begin()
 	if err != nil {
+		slog.Error("store: set default begin tx failed", "api_key", apiKey, "error", err)
 		return err
 	}
 	defer tx.Rollback()
 
 	if _, err := tx.Exec("UPDATE accounts SET is_default = 0, updated_at = datetime('now')"); err != nil {
+		slog.Error("store: set default clear failed", "error", err)
 		return err
 	}
 	if _, err := tx.Exec("UPDATE accounts SET is_default = 1, updated_at = datetime('now') WHERE api_key = ?", apiKey); err != nil {
+		slog.Error("store: set default assign failed", "api_key", apiKey, "error", err)
 		return err
 	}
 	return tx.Commit()
@@ -414,6 +442,9 @@ func (s *Store) UpdateAccountModel(apiKey, model string) error {
 		"UPDATE accounts SET default_model = ?, updated_at = datetime('now') WHERE api_key = ?",
 		model, apiKey,
 	)
+	if err != nil {
+		slog.Error("store: update account model failed", "api_key", apiKey, "model", model, "error", err)
+	}
 	return err
 }
 
@@ -422,6 +453,7 @@ func (s *Store) UpdateAccountModel(apiKey, model string) error {
 func (s *Store) GetSettings() (map[string]string, error) {
 	rows, err := s.db.Query("SELECT key, value FROM settings")
 	if err != nil {
+		slog.Error("store: get settings query failed", "error", err)
 		return nil, err
 	}
 	defer rows.Close()
@@ -430,6 +462,7 @@ func (s *Store) GetSettings() (map[string]string, error) {
 	for rows.Next() {
 		var k, v string
 		if err := rows.Scan(&k, &v); err != nil {
+			slog.Error("store: get settings scan failed", "error", err)
 			return nil, err
 		}
 		m[k] = v
@@ -442,12 +475,16 @@ func (s *Store) SetSetting(key, value string) error {
 		"INSERT OR REPLACE INTO settings (key, value, updated_at) VALUES (?, ?, datetime('now'))",
 		key, value,
 	)
+	if err != nil {
+		slog.Error("store: set setting failed", "key", key, "error", err)
+	}
 	return err
 }
 
 func (s *Store) SetSettings(settings map[string]string) error {
 	tx, err := s.db.Begin()
 	if err != nil {
+		slog.Error("store: set settings begin tx failed", "error", err)
 		return err
 	}
 	defer tx.Rollback()
@@ -457,6 +494,7 @@ func (s *Store) SetSettings(settings map[string]string) error {
 			"INSERT OR REPLACE INTO settings (key, value, updated_at) VALUES (?, ?, datetime('now'))",
 			k, v,
 		); err != nil {
+			slog.Error("store: set settings exec failed", "key", k, "error", err)
 			return err
 		}
 	}
@@ -465,32 +503,40 @@ func (s *Store) SetSettings(settings map[string]string) error {
 
 // --- Request Logging ---
 
-func (s *Store) LogRequest(apiKey, model, endpoint string, stream bool, statusCode int, latencyMs int64) error {
+func (s *Store) LogRequest(apiKey, model, endpoint string, stream bool, statusCode int, latencyMs int64, errMsg string) error {
 	sInt := 0
 	if stream {
 		sInt = 1
 	}
 	_, err := s.db.Exec(
-		"INSERT INTO request_logs (api_key, model, endpoint, stream, status_code, latency_ms) VALUES (?, ?, ?, ?, ?, ?)",
-		apiKey, model, endpoint, sInt, statusCode, latencyMs,
+		"INSERT INTO request_logs (api_key, model, endpoint, stream, status_code, latency_ms, error_message) VALUES (?, ?, ?, ?, ?, ?, ?)",
+		apiKey, model, endpoint, sInt, statusCode, latencyMs, errMsg,
 	)
+	if err != nil {
+		slog.Error("store: log request failed", "api_key", apiKey, "endpoint", endpoint, "error", err)
+	}
 	return err
 }
 
 func (s *Store) GetStats() (*Stats, error) {
 	stats := &Stats{}
+	tf := "created_at >= datetime('now', '-24 hours')"
 
-	err := s.db.QueryRow("SELECT COUNT(*) FROM request_logs").Scan(&stats.TotalRequests)
+	err := s.db.QueryRow("SELECT COUNT(*) FROM request_logs WHERE "+tf).Scan(&stats.TotalRequests)
 	if err != nil {
+		slog.Error("store: get stats count failed", "error", err)
 		return nil, err
 	}
 
-	s.db.QueryRow("SELECT COALESCE(AVG(latency_ms), 0) FROM request_logs").Scan(&stats.AvgLatencyMs)
-
+	s.db.QueryRow("SELECT COALESCE(AVG(latency_ms), 0) FROM request_logs WHERE "+tf).Scan(&stats.AvgLatencyMs)
 	s.db.QueryRow("SELECT COUNT(*) FROM accounts").Scan(&stats.AccountsCount)
+	s.db.QueryRow("SELECT COUNT(*) FROM request_logs WHERE "+tf+" AND status_code >= 400").Scan(&stats.ErrorCount)
+	s.db.QueryRow("SELECT COUNT(*) FROM request_logs WHERE "+tf+" AND stream = 1").Scan(&stats.StreamCount)
+	s.db.QueryRow("SELECT COUNT(*) FROM request_logs WHERE "+tf+" AND status_code < 400").Scan(&stats.SuccessCount)
 
-	rows, err := s.db.Query("SELECT model, COUNT(*) as cnt FROM request_logs GROUP BY model ORDER BY cnt DESC")
+	rows, err := s.db.Query("SELECT model, COUNT(*) as cnt FROM request_logs WHERE "+tf+" AND model != '' GROUP BY model ORDER BY cnt DESC")
 	if err != nil {
+		slog.Error("store: get stats by model query failed", "error", err)
 		return nil, err
 	}
 	defer rows.Close()
@@ -502,17 +548,32 @@ func (s *Store) GetStats() (*Stats, error) {
 		stats.ByModel = append(stats.ByModel, mc)
 	}
 
-	rows2, err := s.db.Query("SELECT api_key, COUNT(*) as cnt FROM request_logs GROUP BY api_key ORDER BY cnt DESC")
+	validKeys := make(map[string]bool)
+	accounts, _ := s.ListAccounts()
+	for _, a := range accounts {
+		validKeys[a.APIKey] = true
+	}
+
+	rows2, err := s.db.Query("SELECT api_key, COUNT(*) as cnt FROM request_logs WHERE "+tf+" GROUP BY api_key ORDER BY cnt DESC")
 	if err != nil {
+		slog.Error("store: get stats by account query failed", "error", err)
 		return nil, err
 	}
 	defer rows2.Close()
+	otherCount := 0
 	for rows2.Next() {
 		var ac AccountCount
 		if err := rows2.Scan(&ac.APIKey, &ac.Count); err != nil {
 			return nil, err
 		}
-		stats.ByAccount = append(stats.ByAccount, ac)
+		if validKeys[ac.APIKey] {
+			stats.ByAccount = append(stats.ByAccount, ac)
+		} else {
+			otherCount += ac.Count
+		}
+	}
+	if otherCount > 0 {
+		stats.ByAccount = append(stats.ByAccount, AccountCount{APIKey: "其他", Count: otherCount})
 	}
 
 	return stats, nil
@@ -560,7 +621,7 @@ func (s *Store) GetAccountLogs(apiKey string, limit int) ([]RequestLog, error) {
 		limit = 100
 	}
 	rows, err := s.db.Query(
-		"SELECT id, api_key, model, endpoint, stream, status_code, latency_ms, created_at FROM request_logs WHERE api_key = ? ORDER BY id DESC LIMIT ?",
+		"SELECT id, api_key, model, endpoint, stream, status_code, latency_ms, COALESCE(error_message, ''), created_at FROM request_logs WHERE api_key = ? ORDER BY id DESC LIMIT ?",
 		apiKey, limit,
 	)
 	if err != nil {
@@ -572,7 +633,7 @@ func (s *Store) GetAccountLogs(apiKey string, limit int) ([]RequestLog, error) {
 	for rows.Next() {
 		var l RequestLog
 		var streamInt int
-		if err := rows.Scan(&l.ID, &l.APIKey, &l.Model, &l.Endpoint, &streamInt, &l.StatusCode, &l.LatencyMs, &l.CreatedAt); err != nil {
+		if err := rows.Scan(&l.ID, &l.APIKey, &l.Model, &l.Endpoint, &streamInt, &l.StatusCode, &l.LatencyMs, &l.ErrorMessage, &l.CreatedAt); err != nil {
 			return nil, err
 		}
 		l.Stream = streamInt == 1
@@ -586,7 +647,7 @@ func (s *Store) GetRecentLogs(limit int) ([]RequestLog, error) {
 		limit = 100
 	}
 	rows, err := s.db.Query(
-		"SELECT id, api_key, model, endpoint, stream, status_code, latency_ms, created_at FROM request_logs ORDER BY id DESC LIMIT ?",
+		"SELECT id, api_key, model, endpoint, stream, status_code, latency_ms, COALESCE(error_message, ''), created_at FROM request_logs ORDER BY id DESC LIMIT ?",
 		limit,
 	)
 	if err != nil {
@@ -598,13 +659,60 @@ func (s *Store) GetRecentLogs(limit int) ([]RequestLog, error) {
 	for rows.Next() {
 		var l RequestLog
 		var streamInt int
-		if err := rows.Scan(&l.ID, &l.APIKey, &l.Model, &l.Endpoint, &streamInt, &l.StatusCode, &l.LatencyMs, &l.CreatedAt); err != nil {
+		if err := rows.Scan(&l.ID, &l.APIKey, &l.Model, &l.Endpoint, &streamInt, &l.StatusCode, &l.LatencyMs, &l.ErrorMessage, &l.CreatedAt); err != nil {
 			return nil, err
 		}
 		l.Stream = streamInt == 1
 		logs = append(logs, l)
 	}
 	return logs, rows.Err()
+}
+
+
+// GetRecentErrors returns request logs with status_code >= 400.
+func (s *Store) GetRecentErrors(limit int) ([]RequestLog, error) {
+	if limit <= 0 {
+		limit = 50
+	}
+	rows, err := s.db.Query(
+		"SELECT id, api_key, model, endpoint, stream, status_code, latency_ms, COALESCE(error_message, ''), created_at FROM request_logs WHERE status_code >= 400 ORDER BY id DESC LIMIT ?",
+		limit,
+	)
+	if err != nil {
+		slog.Error("store: get recent errors query failed", "error", err)
+		return nil, err
+	}
+	defer rows.Close()
+
+	var logs []RequestLog
+	for rows.Next() {
+		var l RequestLog
+		var streamInt int
+		if err := rows.Scan(&l.ID, &l.APIKey, &l.Model, &l.Endpoint, &streamInt, &l.StatusCode, &l.LatencyMs, &l.ErrorMessage, &l.CreatedAt); err != nil {
+			slog.Error("store: get recent errors scan failed", "error", err)
+			return nil, err
+		}
+		l.Stream = streamInt == 1
+		logs = append(logs, l)
+	}
+	if err := rows.Err(); err != nil {
+		slog.Error("store: get recent errors iteration failed", "error", err)
+		return nil, err
+	}
+	return logs, nil
+}
+// MigrateTokenLogs reassigns request_logs stored under api_token values to the account's api_key.
+func (s *Store) MigrateTokenLogs() (int64, error) {
+	result, err := s.db.Exec(`
+		UPDATE request_logs SET api_key = (
+			SELECT a.api_key FROM accounts a WHERE a.api_token = request_logs.api_key
+		) WHERE api_key LIKE 'sk-joy-%' AND EXISTS (
+			SELECT 1 FROM accounts a WHERE a.api_token = request_logs.api_key
+		)`)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected()
 }
 
 // ReassignLogs maps old api_key values in request_logs to a new api_key.

@@ -54,7 +54,7 @@ const getBaseURL = () => `http://${window.location.host}`;
 
 const buildClaudeCodeCmd = (apiKey: string, model = 'GLM-5.1') => [
   `API_TIMEOUT_MS=6000000 \\`,
-  `CLAUDE_CODE_MAX_RETRIES=1000000 \\`,
+  `CLAUDE_CODE_MAX_RETRIES=3 \\`,
   `ANTHROPIC_BASE_URL=${getBaseURL()} \\`,
   `ANTHROPIC_API_KEY="${apiKey}" \\`,
   `CLAUDE_CODE_MAX_OUTPUT_TOKENS=6553655 \\`,
@@ -472,6 +472,17 @@ const AccountDetail: React.FC = () => {
           pagination={{ pageSize: 20, showSizeChanger: false, showTotal: (t) => `共 ${t} 条` }}
           scroll={{ x: 740 }}
           locale={{ emptyText: '暂无请求记录' }}
+          expandable={{
+            rowExpandable: (record) => record.status_code >= 400 && !!record.error_message,
+            expandedRowRender: (record) => (
+              <div style={{ padding: '8px 0' }}>
+                <Typography.Text type="secondary" style={{ fontSize: 12 }}>错误详情：</Typography.Text>
+                <Typography.Text style={{ fontSize: 12, color: '#cf1322', fontFamily: 'monospace' }}>
+                  {record.error_message}
+                </Typography.Text>
+              </div>
+            ),
+          }}
         />
       </Card>
     </div>

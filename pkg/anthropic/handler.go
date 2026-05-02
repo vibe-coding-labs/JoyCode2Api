@@ -83,10 +83,22 @@ func (h *Handler) handleNonStream(w http.ResponseWriter, req *MessageRequest, cl
 	const maxRetries = 3
 	var jcResp map[string]interface{}
 	var lastErr error
+	truncated := false
 
 	for attempt := 1; attempt <= maxRetries; attempt++ {
 		jcResp, lastErr = client.Post(chatEndpoint, jcBody)
 		if lastErr != nil {
+			if isContextLimitError(lastErr.Error()) && !truncated {
+				if truncateMessages(req) {
+					truncated = true
+					jcBody = TranslateRequest(req)
+					slog.Warn("retrying with truncated messages (non-stream)")
+					continue
+				}
+				slog.Warn("context limit exceeded, cannot truncate further")
+				writeAnthropicRequestError(w, "上下文长度超出模型限制，且无法进一步截断。请压缩对话历史或开启新对话。")
+				return
+			}
 			slog.Error("non-stream retry error", "attempt", attempt, "max", maxRetries, "error", lastErr)
 			if attempt < maxRetries {
 				time.Sleep(time.Duration(attempt) * 500 * time.Millisecond)
@@ -97,6 +109,10 @@ func (h *Handler) handleNonStream(w http.ResponseWriter, req *MessageRequest, cl
 	}
 
 	if lastErr != nil {
+		if isContextLimitError(lastErr.Error()) {
+			writeAnthropicRequestError(w, "上下文长度超出模型限制。请压缩对话历史或开启新对话。原始错误: "+lastErr.Error())
+			return
+		}
 		writeAnthropicError(w, 500, lastErr.Error())
 		return
 	}
@@ -136,12 +152,29 @@ func (h *Handler) handleStream(w http.ResponseWriter, req *MessageRequest, clien
 	jcBody["stream"] = true
 	slog.Debug("stream starting", "model", jcBody["model"], "max_tokens", jcBody["max_tokens"])
 
-	// Connect with retry BEFORE committing response headers
+	// Connect with retry, auto-truncate on context limit
 	resp, err := h.connectStreamWithRetry(jcBody, client)
 	if err != nil {
-		slog.Error("stream failed after retries", "error", err)
-		writeAnthropicError(w, 500, err.Error())
-		return
+		errMsg := err.Error()
+		if isContextLimitError(errMsg) {
+			if truncateMessages(req) {
+				slog.Warn("retrying stream with truncated messages")
+				jcBody = TranslateRequest(req)
+				jcBody["stream"] = true
+				resp, err = h.connectStreamWithRetry(jcBody, client)
+			}
+		}
+		if err != nil {
+			errMsg = err.Error()
+			if isContextLimitError(errMsg) {
+				slog.Warn("context limit exceeded (stream), cannot proceed")
+				writeAnthropicRequestError(w, "上下文长度超出模型限制。请压缩对话历史或开启新对话。原始错误: "+errMsg)
+				return
+			}
+			slog.Error("stream failed after retries", "error", errMsg)
+			writeAnthropicError(w, 500, errMsg)
+			return
+		}
 	}
 	defer resp.Body.Close()
 
@@ -354,8 +387,11 @@ func (h *Handler) connectStreamWithRetry(jcBody map[string]interface{}, client *
 		dataContent := strings.TrimPrefix(trimmed, "data: ")
 		if isUpstreamError(dataContent) {
 			resp.Body.Close()
-			lastErr = fmt.Errorf("upstream error: %s", truncate(dataContent, 200))
-			slog.Error("stream upstream error", "attempt", attempt, "max", maxRetries, "body", truncate(dataContent, 200))
+			lastErr = fmt.Errorf("upstream error: %s", truncate(dataContent, 500))
+			slog.Error("stream upstream error", "attempt", attempt, "max", maxRetries, "body", truncate(dataContent, 500))
+			if isContextLimitError(dataContent) {
+				return nil, lastErr
+			}
 			if attempt < maxRetries {
 				time.Sleep(time.Duration(attempt) * 500 * time.Millisecond)
 			}
@@ -373,6 +409,19 @@ func (h *Handler) connectStreamWithRetry(jcBody map[string]interface{}, client *
 		return resp, nil
 	}
 	return nil, fmt.Errorf("stream failed after %d attempts: %w", maxRetries, lastErr)
+}
+
+// isContextLimitError checks if the upstream error indicates context length exceeded.
+func isContextLimitError(body string) bool {
+	lower := strings.ToLower(body)
+	return strings.Contains(lower, "context length") ||
+		strings.Contains(lower, "context window") ||
+		strings.Contains(lower, "token limit") ||
+		strings.Contains(lower, "tokens exceeded") ||
+		strings.Contains(lower, "input length") ||
+		strings.Contains(lower, "model_context_window_exceeded") ||
+		strings.Contains(lower, "prompt length") ||
+		strings.Contains(lower, "max_input_tokens")
 }
 
 func isUpstreamError(line string) bool {
@@ -414,5 +463,12 @@ func writeAnthropicError(w http.ResponseWriter, code int, msg string) {
 	writeAnthropicJSON(w, code, map[string]interface{}{
 		"type":  "error",
 		"error": map[string]string{"type": "api_error", "message": msg},
+	})
+}
+
+func writeAnthropicRequestError(w http.ResponseWriter, msg string) {
+	writeAnthropicJSON(w, 400, map[string]interface{}{
+		"type":  "error",
+		"error": map[string]string{"type": "invalid_request_error", "message": msg},
 	})
 }

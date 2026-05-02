@@ -12,6 +12,7 @@ import (
 	"os"
 	"path/filepath"
 	"sync"
+	"time"
 
 	_ "github.com/mattn/go-sqlite3"
 )
@@ -171,13 +172,13 @@ func (s *Store) migrate() error {
 			user_id TEXT NOT NULL,
 			is_default INTEGER DEFAULT 0,
 			default_model TEXT DEFAULT '',
-			created_at TEXT DEFAULT (datetime('now')),
-			updated_at TEXT DEFAULT (datetime('now'))
+			created_at TEXT DEFAULT (datetime('now', 'localtime')),
+			updated_at TEXT DEFAULT (datetime('now', 'localtime'))
 		);
 		CREATE TABLE IF NOT EXISTS settings (
 			key TEXT PRIMARY KEY,
 			value TEXT NOT NULL,
-			updated_at TEXT DEFAULT (datetime('now'))
+			updated_at TEXT DEFAULT (datetime('now', 'localtime'))
 		);
 		CREATE TABLE IF NOT EXISTS request_logs (
 			id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -187,7 +188,7 @@ func (s *Store) migrate() error {
 			stream INTEGER DEFAULT 0,
 			status_code INTEGER,
 			latency_ms INTEGER,
-			created_at TEXT DEFAULT (datetime('now'))
+			created_at TEXT DEFAULT (datetime('now', 'localtime'))
 		);
 	`)
 	if err != nil {
@@ -214,7 +215,34 @@ func (s *Store) migrate() error {
 		token := generateToken()
 		s.db.Exec("UPDATE accounts SET api_token = ? WHERE api_key = ?", token, key)
 	}
+
+	// Migration: fix historical UTC timestamps to localtime
+	s.migrateUTCTimestamps()
+
 	return nil
+}
+
+// migrateUTCTimestamps converts existing UTC timestamps to localtime.
+// Uses SQLite to check if the newest record's time is behind local now by more than
+// 30 minutes — if so, the data was stored in UTC and needs +offset hours.
+func (s *Store) migrateUTCTimestamps() {
+	_, offset := time.Now().Zone()
+	hours := offset / 3600
+	if hours <= 0 {
+		return
+	}
+	// Check if the newest request_log is behind localtime by roughly the offset
+	var count int
+	s.db.QueryRow(fmt.Sprintf(
+		"SELECT COUNT(*) FROM request_logs WHERE created_at < datetime('now', 'localtime') - INTERVAL IS NOT SUPPORTED AND created_at < datetime('now', 'localtime', '-30 minutes')",
+	)).Scan(&count)
+	if count == 0 {
+		return
+	}
+	s.db.Exec(fmt.Sprintf("UPDATE request_logs SET created_at = datetime(created_at, '+%d hours') WHERE created_at < datetime('now', 'localtime', '-30 minutes')", hours))
+	s.db.Exec(fmt.Sprintf("UPDATE accounts SET created_at = datetime(created_at, '+%d hours') WHERE created_at < datetime('now', 'localtime', '-30 minutes')", hours))
+	s.db.Exec(fmt.Sprintf("UPDATE settings SET updated_at = datetime(updated_at, '+%d hours') WHERE updated_at < datetime('now', 'localtime', '-30 minutes')", hours))
+	slog.Info("migrated UTC timestamps to localtime", "offset_hours", hours, "records_fixed", count)
 }
 
 // --- Encryption ---
@@ -375,7 +403,7 @@ func (s *Store) GetAccountByToken(token string) (*Account, error) {
 
 func (s *Store) RenewToken(apiKey string) (string, error) {
 	token := generateToken()
-	_, err := s.db.Exec("UPDATE accounts SET api_token = ?, updated_at = datetime('now') WHERE api_key = ?", token, apiKey)
+	_, err := s.db.Exec("UPDATE accounts SET api_token = ?, updated_at = datetime('now', 'localtime') WHERE api_key = ?", token, apiKey)
 	if err != nil {
 		slog.Error("store: renew token failed", "api_key", apiKey, "error", err)
 		return "", err
@@ -426,11 +454,11 @@ func (s *Store) SetDefault(apiKey string) error {
 	}
 	defer tx.Rollback()
 
-	if _, err := tx.Exec("UPDATE accounts SET is_default = 0, updated_at = datetime('now')"); err != nil {
+	if _, err := tx.Exec("UPDATE accounts SET is_default = 0, updated_at = datetime('now', 'localtime')"); err != nil {
 		slog.Error("store: set default clear failed", "error", err)
 		return err
 	}
-	if _, err := tx.Exec("UPDATE accounts SET is_default = 1, updated_at = datetime('now') WHERE api_key = ?", apiKey); err != nil {
+	if _, err := tx.Exec("UPDATE accounts SET is_default = 1, updated_at = datetime('now', 'localtime') WHERE api_key = ?", apiKey); err != nil {
 		slog.Error("store: set default assign failed", "api_key", apiKey, "error", err)
 		return err
 	}
@@ -439,7 +467,7 @@ func (s *Store) SetDefault(apiKey string) error {
 
 func (s *Store) UpdateAccountModel(apiKey, model string) error {
 	_, err := s.db.Exec(
-		"UPDATE accounts SET default_model = ?, updated_at = datetime('now') WHERE api_key = ?",
+		"UPDATE accounts SET default_model = ?, updated_at = datetime('now', 'localtime') WHERE api_key = ?",
 		model, apiKey,
 	)
 	if err != nil {
@@ -472,7 +500,7 @@ func (s *Store) GetSettings() (map[string]string, error) {
 
 func (s *Store) SetSetting(key, value string) error {
 	_, err := s.db.Exec(
-		"INSERT OR REPLACE INTO settings (key, value, updated_at) VALUES (?, ?, datetime('now'))",
+		"INSERT OR REPLACE INTO settings (key, value, updated_at) VALUES (?, ?, datetime('now', 'localtime'))",
 		key, value,
 	)
 	if err != nil {
@@ -491,7 +519,7 @@ func (s *Store) SetSettings(settings map[string]string) error {
 
 	for k, v := range settings {
 		if _, err := tx.Exec(
-			"INSERT OR REPLACE INTO settings (key, value, updated_at) VALUES (?, ?, datetime('now'))",
+			"INSERT OR REPLACE INTO settings (key, value, updated_at) VALUES (?, ?, datetime('now', 'localtime'))",
 			k, v,
 		); err != nil {
 			slog.Error("store: set settings exec failed", "key", k, "error", err)

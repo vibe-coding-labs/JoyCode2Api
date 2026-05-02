@@ -6,7 +6,9 @@ import (
 )
 
 const (
-	// Safety margin: start truncation when estimated tokens exceed this ratio of maxTokens
+	// Upstream model context window size (JoyCode's ModelArts limit)
+	contextWindowSize = 196608
+	// Safety margin: start truncation when estimated tokens exceed this ratio of contextWindowSize
 	preemptiveThresholdRatio = 0.85
 	// Rough approximation: 1 token ≈ 3.5 bytes for mixed Chinese/English code content
 	bytesPerToken = 3.5
@@ -33,13 +35,10 @@ func estimateTokens(req *MessageRequest) int {
 // PreemptiveTruncate checks if the request likely exceeds the model's context limit
 // and proactively truncates before sending. Returns the number of truncation rounds performed.
 // Returns -1 if truncation failed to bring estimated tokens below threshold.
-func PreemptiveTruncate(req *MessageRequest, maxTokens int) int {
-	// Use maxTokens as a proxy for context window size (conservative: actual window is larger,
-	// but we need headroom for the response). Use 70% of maxTokens as safe threshold.
-	threshold := int(float64(maxTokens) * preemptiveThresholdRatio)
-	if threshold < 1000 {
-		threshold = 1000
-	}
+func PreemptiveTruncate(req *MessageRequest) int {
+	window := float64(contextWindowSize)
+	ratio := float64(preemptiveThresholdRatio)
+	threshold := int(window * ratio)
 
 	rounds := 0
 	for rounds < maxTruncationRounds {

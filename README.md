@@ -26,22 +26,22 @@ Claude Code / Cursor / Windsurf  →  JoyCodeProxy  →  JoyCode API
 自带一个管理界面，账号、用量、配置都在上面搞。
 
 <div align="center">
-<img src="data/imgs/数据概览.png" alt="Dashboard 数据概览" width="720" />
+<img src="data/imgs/dashboard.png" alt="Dashboard 数据概览" width="720" />
 <p><sub>数据概览 — 请求量、Token 消耗、延迟、模型分布</sub></p>
 </div>
 
 <div align="center">
-<img src="data/imgs/账号管理.png" alt="账号管理" width="720" />
+<img src="data/imgs/accounts.png" alt="账号管理" width="720" />
 <p><sub>账号管理 — 支持多个 JD 账号，扫码添加</sub></p>
 </div>
 
 <div align="center">
-<img src="data/imgs/账号管理-账号详情.png" alt="账号详情" width="720" />
+<img src="data/imgs/account-detail.png" alt="账号详情" width="720" />
 <p><sub>账号详情 — 单个账号的用量、模型分布、请求记录</sub></p>
 </div>
 
 <div align="center">
-<img src="data/imgs/系统设置.png" alt="系统设置" width="720" />
+<img src="data/imgs/settings.png" alt="系统设置" width="720" />
 <p><sub>系统设置 — 默认模型、超时、日志保留，改完马上生效</sub></p>
 </div>
 

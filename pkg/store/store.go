@@ -71,12 +71,14 @@ type AccountStats struct {
 	TotalRequests int             `json:"total_requests"`
 	TotalInputTk  int             `json:"total_input_tokens"`
 	TotalOutputTk int             `json:"total_output_tokens"`
+	SuccessCount  int             `json:"success_count"`
+	StreamCount   int             `json:"stream_count"`
 	ByModel       []ModelCount    `json:"by_model"`
 	ByEndpoint    []EndpointCount `json:"by_endpoint"`
 	AvgLatencyMs  float64         `json:"avg_latency_ms"`
-	StreamCount   int             `json:"stream_count"`
 	ErrorCount    int             `json:"error_count"`
 	AllTime       *AllTimeTotals  `json:"all_time"`
+	Hourly        []HourlyData    `json:"hourly"`
 }
 
 type EndpointCount struct {
@@ -717,6 +719,7 @@ func (s *Store) GetAccountStats(apiKey string) (*AccountStats, error) {
 	s.db.QueryRow("SELECT COALESCE(AVG(latency_ms), 0) FROM request_logs WHERE api_key = ? AND "+tf, apiKey).Scan(&as.AvgLatencyMs)
 	s.db.QueryRow("SELECT COUNT(*) FROM request_logs WHERE api_key = ? AND stream = 1 AND "+tf, apiKey).Scan(&as.StreamCount)
 	s.db.QueryRow("SELECT COUNT(*) FROM request_logs WHERE api_key = ? AND status_code >= 400 AND "+tf, apiKey).Scan(&as.ErrorCount)
+	s.db.QueryRow("SELECT COUNT(*) FROM request_logs WHERE api_key = ? AND status_code < 400 AND "+tf, apiKey).Scan(&as.SuccessCount)
 	s.db.QueryRow("SELECT COALESCE(SUM(input_tokens), 0) FROM request_logs WHERE api_key = ? AND "+tf, apiKey).Scan(&as.TotalInputTk)
 	s.db.QueryRow("SELECT COALESCE(SUM(output_tokens), 0) FROM request_logs WHERE api_key = ? AND "+tf, apiKey).Scan(&as.TotalOutputTk)
 
@@ -753,6 +756,26 @@ func (s *Store) GetAccountStats(apiKey string) (*AccountStats, error) {
 	s.db.QueryRow("SELECT COALESCE(SUM(output_tokens), 0) FROM request_logs WHERE api_key = ?", apiKey).Scan(&allTime.TotalOutputTk)
 	s.db.QueryRow("SELECT COUNT(*) FROM request_logs WHERE api_key = ? AND status_code >= 400", apiKey).Scan(&allTime.ErrorCount)
 	as.AllTime = allTime
+
+	// Hourly breakdown for last 24 hours
+	hRows, err := s.db.Query(`
+		SELECT strftime('%H', created_at) as hour,
+			COUNT(*) as count,
+			COALESCE(SUM(input_tokens), 0),
+			COALESCE(SUM(output_tokens), 0),
+			SUM(CASE WHEN status_code >= 400 THEN 1 ELSE 0 END)
+		FROM request_logs
+		WHERE api_key = ? AND `+tf+`
+		GROUP BY hour ORDER BY hour`, apiKey)
+	if err == nil {
+		defer hRows.Close()
+		for hRows.Next() {
+			var h HourlyData
+			if hRows.Scan(&h.Hour, &h.Count, &h.InputTokens, &h.OutputTokens, &h.Errors) == nil {
+				as.Hourly = append(as.Hourly, h)
+			}
+		}
+	}
 
 	return as, nil
 }

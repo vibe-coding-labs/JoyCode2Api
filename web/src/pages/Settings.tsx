@@ -1,13 +1,13 @@
 import React, { useEffect, useState } from 'react';
 import {
-  Card, Form, Input, Button, InputNumber, Select, Switch, message,
+  Card, Form, Input, Button, InputNumber, Select, Switch, message, Modal,
   Spin, Typography, Space, Row, Col, Tag, Tooltip,
 } from 'antd';
 import {
   SaveOutlined, ReloadOutlined, QuestionCircleOutlined,
   SettingOutlined, CheckCircleOutlined, InfoCircleOutlined, LockOutlined,
 } from '@ant-design/icons';
-import { api, authApi } from '../api';
+import { api, authApi, clearToken } from '../api';
 import type { Settings } from '../api';
 
 const { Text } = Typography;
@@ -144,16 +144,27 @@ const SettingsPage: React.FC = () => {
   };
 
   const handleChangePassword = async (values: { old_password: string; new_password: string }) => {
-    setChangePwLoading(true);
-    try {
-      await authApi.changePassword(values.old_password, values.new_password);
-      message.success('密码修改成功');
-      pwForm.resetFields();
-    } catch (e: unknown) {
-      message.error(e instanceof Error ? e.message : '密码修改失败');
-    } finally {
-      setChangePwLoading(false);
-    }
+    Modal.confirm({
+      title: '确认修改密码',
+      content: '修改密码后需要重新登录，确定要继续吗？',
+      okText: '确认修改',
+      cancelText: '取消',
+      okButtonProps: { danger: true },
+      onOk: async () => {
+        setChangePwLoading(true);
+        try {
+          await authApi.changePassword(values.old_password, values.new_password);
+          message.success('密码修改成功，请重新登录');
+          pwForm.resetFields();
+          clearToken();
+          setTimeout(() => { window.location.href = '/login'; }, 1000);
+        } catch (e: unknown) {
+          message.error(e instanceof Error ? e.message : '密码修改失败');
+        } finally {
+          setChangePwLoading(false);
+        }
+      },
+    });
   };
 
   if (loading) return <Spin size="large" style={{ display: 'block', margin: '100px auto' }} />;

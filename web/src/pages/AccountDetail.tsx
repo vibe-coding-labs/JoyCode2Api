@@ -1,17 +1,18 @@
 import React, { useEffect, useState } from 'react';
 import {
   Card, Row, Col, Statistic, Typography, Spin, Tag, Select, Button,
-  message, Space, Table, Badge, Segmented, Popconfirm, Tooltip,
+  message, Space, Table, Badge, Segmented, Popconfirm, Tooltip, Divider,
 } from 'antd';
 import {
   ArrowLeftOutlined, ApiOutlined, ThunderboltOutlined,
-  CheckCircleOutlined, WarningOutlined, ReloadOutlined,
+  CheckCircleOutlined, ReloadOutlined,
   ClockCircleOutlined, GlobalOutlined, FireOutlined, CopyOutlined,
   DeleteOutlined, QuestionCircleOutlined, InfoCircleOutlined,
+  CloseCircleOutlined, SwapOutlined,
 } from '@ant-design/icons';
 import {
   BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip as RTooltip,
-  ResponsiveContainer, PieChart, Pie, Cell,
+  ResponsiveContainer, PieChart, Pie, Cell, AreaChart, Area,
 } from 'recharts';
 import { useParams, useNavigate } from 'react-router-dom';
 import { api } from '../api';
@@ -173,10 +174,6 @@ const AccountDetail: React.FC = () => {
     : logFilter === 'errors'
       ? logs.filter((l) => l.status_code >= 400)
       : logs.filter((l) => l.stream);
-
-  const successRate = stats && stats.total_requests > 0
-    ? Math.round(((stats.total_requests - stats.error_count) / stats.total_requests) * 100)
-    : 100;
 
   const endpointData = stats?.by_endpoint.map((e) => ({
     name: e.endpoint.replace('/v1/', ''),
@@ -400,79 +397,156 @@ const AccountDetail: React.FC = () => {
         </Row>
       </Card>
 
-      {/* Stats row */}
+      {/* Stats panels */}
       {stats && (
-        <Row gutter={[12, 12]} style={{ marginBottom: 20 }}>
-          <Col xs={8} sm={4}>
-            <Card size="small" bodyStyle={{ padding: '12px 16px' }}>
-              <Statistic
-                title={<span style={{ fontSize: 12 }}>请求 <span style={{ color: '#999', fontWeight: 400 }}>(24h)</span></span>}
-                value={stats.total_requests}
-                prefix={<ApiOutlined />}
-                valueStyle={{ fontSize: 20 }}
-              />
-              {stats.all_time && (
-                <Typography.Text type="secondary" style={{ fontSize: 11 }}>累计 {stats.all_time.total_requests.toLocaleString()}</Typography.Text>
-              )}
+        <Row gutter={[16, 16]} style={{ marginBottom: 20 }}>
+          <Col xs={24} md={12}>
+            <Card
+              title={<span><ApiOutlined style={{ marginRight: 6 }} />请求统计</span>}
+              size="small"
+              style={{ borderRadius: 8, height: '100%' }}
+            >
+              <Row gutter={[8, 12]}>
+                <Col span={12}>
+                  <Statistic title="今日请求" value={stats.total_requests} valueStyle={{ fontSize: 20, color: '#00b578' }} prefix={<ApiOutlined />} />
+                </Col>
+                <Col span={12}>
+                  <Statistic title="累计请求" value={stats.all_time?.total_requests ?? 0} valueStyle={{ fontSize: 20 }} />
+                </Col>
+                <Col span={12}>
+                  <Statistic
+                    title="今日成功"
+                    value={stats.success_count}
+                    prefix={<CheckCircleOutlined />}
+                    valueStyle={{ fontSize: 18, color: '#52c41a' }}
+                  />
+                  <Typography.Text type="secondary" style={{ fontSize: 11 }}>
+                    占比 {stats.total_requests > 0 ? Math.round((stats.success_count / stats.total_requests) * 100) : 100}%
+                  </Typography.Text>
+                </Col>
+                <Col span={12}>
+                  <Statistic
+                    title="今日失败"
+                    value={stats.error_count}
+                    prefix={<CloseCircleOutlined />}
+                    valueStyle={{ fontSize: 18, color: stats.error_count > 0 ? '#ff4d4f' : '#52c41a' }}
+                  />
+                  <Typography.Text type="secondary" style={{ fontSize: 11 }}>
+                    占比 {stats.total_requests > 0 ? Math.round((stats.error_count / stats.total_requests) * 100) : 0}%
+                  </Typography.Text>
+                </Col>
+                <Col span={24}>
+                  <Divider style={{ margin: '4px 0 8px' }} />
+                  <Row gutter={8}>
+                    <Col span={12}>
+                      <Statistic
+                        title="流式请求"
+                        value={stats.stream_count}
+                        prefix={<SwapOutlined />}
+                        valueStyle={{ fontSize: 16 }}
+                      />
+                      <Tag color="blue" style={{ marginTop: 2 }}>
+                        {stats.total_requests > 0 ? Math.round((stats.stream_count / stats.total_requests) * 100) : 0}%
+                      </Tag>
+                    </Col>
+                    <Col span={12}>
+                      <Statistic
+                        title="平均延迟"
+                        value={Math.round(stats.avg_latency_ms)}
+                        suffix="ms"
+                        prefix={<ThunderboltOutlined />}
+                        valueStyle={{ fontSize: 16, color: stats.avg_latency_ms < 500 ? '#52c41a' : stats.avg_latency_ms < 1500 ? '#faad14' : '#ff4d4f' }}
+                      />
+                    </Col>
+                  </Row>
+                </Col>
+              </Row>
             </Card>
           </Col>
-          <Col xs={8} sm={4}>
-            <Card size="small" bodyStyle={{ padding: '12px 16px' }}>
-              <Statistic
-                title={<span style={{ fontSize: 12 }}>输入 Token <span style={{ color: '#999', fontWeight: 400 }}>(24h)</span></span>}
-                value={fmtTokens(stats.total_input_tokens || 0)}
-                valueStyle={{ fontSize: 20 }}
-              />
-              {stats.all_time && (
-                <Typography.Text type="secondary" style={{ fontSize: 11 }}>累计 {fmtTokens(stats.all_time.total_input_tokens)}</Typography.Text>
-              )}
+
+          <Col xs={24} md={12}>
+            <Card
+              title={<span><FireOutlined style={{ marginRight: 6 }} />Token 消费</span>}
+              size="small"
+              style={{ borderRadius: 8, height: '100%' }}
+            >
+              <Row gutter={[8, 12]}>
+                <Col span={12}>
+                  <Statistic
+                    title="今日 Token"
+                    value={fmtTokens(stats.total_input_tokens + stats.total_output_tokens)}
+                    valueStyle={{ fontSize: 20, color: '#389e0d' }}
+                  />
+                </Col>
+                <Col span={12}>
+                  <Statistic
+                    title="累计 Token"
+                    value={fmtTokens((stats.all_time?.total_input_tokens ?? 0) + (stats.all_time?.total_output_tokens ?? 0))}
+                    valueStyle={{ fontSize: 20 }}
+                  />
+                </Col>
+                <Col span={12}>
+                  <Statistic title="今日输入" value={fmtTokens(stats.total_input_tokens)} valueStyle={{ fontSize: 16 }} />
+                </Col>
+                <Col span={12}>
+                  <Statistic title="今日输出" value={fmtTokens(stats.total_output_tokens)} valueStyle={{ fontSize: 16 }} />
+                </Col>
+                <Col span={24}>
+                  <Divider style={{ margin: '4px 0 8px' }} />
+                  <Row gutter={8}>
+                    <Col span={12}>
+                      <Statistic
+                        title="平均每请求"
+                        value={stats.total_requests > 0 ? fmtTokens(Math.round((stats.total_input_tokens + stats.total_output_tokens) / stats.total_requests)) : '-'}
+                        suffix={stats.total_requests > 0 ? 'tokens' : ''}
+                        valueStyle={{ fontSize: 15 }}
+                      />
+                    </Col>
+                    <Col span={12}>
+                      <Statistic
+                        title="输入/输出比"
+                        value={stats.total_output_tokens > 0 ? (stats.total_input_tokens / stats.total_output_tokens).toFixed(1) : '-'}
+                        suffix={stats.total_output_tokens > 0 ? ':1' : ''}
+                        valueStyle={{ fontSize: 15 }}
+                      />
+                    </Col>
+                  </Row>
+                </Col>
+              </Row>
             </Card>
           </Col>
-          <Col xs={8} sm={4}>
-            <Card size="small" bodyStyle={{ padding: '12px 16px' }}>
-              <Statistic
-                title={<span style={{ fontSize: 12 }}>输出 Token <span style={{ color: '#999', fontWeight: 400 }}>(24h)</span></span>}
-                value={fmtTokens(stats.total_output_tokens || 0)}
-                valueStyle={{ fontSize: 20 }}
-              />
-              {stats.all_time && (
-                <Typography.Text type="secondary" style={{ fontSize: 11 }}>累计 {fmtTokens(stats.all_time.total_output_tokens)}</Typography.Text>
-              )}
+        </Row>
+      )}
+
+      {/* Hourly trend charts */}
+      {stats && stats.hourly && stats.hourly.length > 0 && (
+        <Row gutter={[16, 16]} style={{ marginBottom: 20 }}>
+          <Col xs={24} lg={12}>
+            <Card title="24 小时请求趋势" size="small">
+              <ResponsiveContainer width="100%" height={200}>
+                <AreaChart data={stats.hourly} margin={{ left: -10 }}>
+                  <CartesianGrid strokeDasharray="3 3" />
+                  <XAxis dataKey="hour" tick={{ fontSize: 11 }} />
+                  <YAxis tick={{ fontSize: 11 }} />
+                  <RTooltip />
+                  <Area type="monotone" dataKey="count" name="请求数" stroke="#00b578" fill="#00b578" fillOpacity={0.15} />
+                  <Area type="monotone" dataKey="errors" name="错误数" stroke="#ff4d4f" fill="#ff4d4f" fillOpacity={0.15} />
+                </AreaChart>
+              </ResponsiveContainer>
             </Card>
           </Col>
-          <Col xs={8} sm={4}>
-            <Card size="small" bodyStyle={{ padding: '12px 16px' }}>
-              <Statistic
-                title={<span style={{ fontSize: 12 }}>平均延迟 <span style={{ color: '#999', fontWeight: 400 }}>(24h)</span></span>}
-                value={Math.round(stats.avg_latency_ms)}
-                suffix="ms"
-                prefix={<ThunderboltOutlined />}
-                valueStyle={{ fontSize: 20 }}
-              />
-            </Card>
-          </Col>
-          <Col xs={8} sm={4}>
-            <Card size="small" bodyStyle={{ padding: '12px 16px' }}>
-              <Statistic
-                title={<span style={{ fontSize: 12 }}>成功率 <span style={{ color: '#999', fontWeight: 400 }}>(24h)</span></span>}
-                value={successRate}
-                suffix="%"
-                prefix={<CheckCircleOutlined />}
-                valueStyle={{ fontSize: 20, color: successRate >= 95 ? '#52c41a' : successRate >= 80 ? '#faad14' : '#ff4d4f' }}
-              />
-            </Card>
-          </Col>
-          <Col xs={8} sm={4}>
-            <Card size="small" bodyStyle={{ padding: '12px 16px' }}>
-              <Statistic
-                title={<span style={{ fontSize: 12 }}>错误 <span style={{ color: '#999', fontWeight: 400 }}>(24h)</span></span>}
-                value={stats.error_count}
-                prefix={<WarningOutlined />}
-                valueStyle={{ fontSize: 20, color: stats.error_count > 0 ? '#ff4d4f' : undefined }}
-              />
-              {stats.all_time && stats.all_time.error_count > 0 && (
-                <Typography.Text type="secondary" style={{ fontSize: 11 }}>累计 {stats.all_time.error_count}</Typography.Text>
-              )}
+          <Col xs={24} lg={12}>
+            <Card title="24 小时 Token 消耗趋势" size="small">
+              <ResponsiveContainer width="100%" height={200}>
+                <AreaChart data={stats.hourly} margin={{ left: -10 }}>
+                  <CartesianGrid strokeDasharray="3 3" />
+                  <XAxis dataKey="hour" tick={{ fontSize: 11 }} />
+                  <YAxis tick={{ fontSize: 11 }} />
+                  <RTooltip />
+                  <Area type="monotone" dataKey="input_tokens" name="输入 Token" stroke="#1890ff" fill="#1890ff" fillOpacity={0.15} />
+                  <Area type="monotone" dataKey="output_tokens" name="输出 Token" stroke="#73d13d" fill="#73d13d" fillOpacity={0.15} />
+                </AreaChart>
+              </ResponsiveContainer>
             </Card>
           </Col>
         </Row>

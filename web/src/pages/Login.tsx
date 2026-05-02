@@ -30,7 +30,7 @@ const LoginPage: React.FC = () => {
       display: 'flex',
       alignItems: 'center',
       justifyContent: 'center',
-      background: 'linear-gradient(135deg, #667eea 0%, #764ba2 100%)',
+      background: 'linear-gradient(135deg, #00b578 0%, #009a63 100%)',
     }}>
       <Card
         style={{ width: 400, borderRadius: 12, boxShadow: '0 8px 24px rgba(0,0,0,0.12)' }}

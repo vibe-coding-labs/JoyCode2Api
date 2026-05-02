@@ -47,10 +47,11 @@ export interface AccountStats {
   total_requests: number;
   total_input_tokens: number;
   total_output_tokens: number;
+  success_count: number;
+  stream_count: number;
   by_model: { model: string; count: number }[];
   by_endpoint: { endpoint: string; count: number }[];
   avg_latency_ms: number;
-  stream_count: number;
   error_count: number;
   all_time?: {
     total_requests: number;
@@ -58,6 +59,13 @@ export interface AccountStats {
     total_output_tokens: number;
     error_count: number;
   };
+  hourly: {
+    hour: string;
+    count: number;
+    input_tokens: number;
+    output_tokens: number;
+    errors: number;
+  }[];
 }
 
 export interface RequestLog {

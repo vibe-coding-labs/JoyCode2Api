@@ -2,24 +2,83 @@ package proxy
 
 import (
 	"sync"
-	"sync/atomic"
+	"time"
 )
 
-var activeSessions sync.Map // map[string]*atomic.Int64
+const sessionTTL = 60 * time.Second
 
-func TrackActive(apiKey string) func() {
-	if apiKey == "" {
-		return func() {}
-	}
-	counter, _ := activeSessions.LoadOrStore(apiKey, &atomic.Int64{})
-	cnt := counter.(*atomic.Int64)
-	cnt.Add(1)
-	return func() { cnt.Add(-1) }
+// sessionEntry tracks when a session was last seen.
+type sessionEntry struct {
+	lastSeen time.Time
 }
 
-func GetActiveSessions(apiKey string) int64 {
-	if v, ok := activeSessions.Load(apiKey); ok {
-		return v.(*atomic.Int64).Load()
+// per-account session store: apiKey → sessionID → entry
+var (
+	sessionMu   sync.Mutex
+	sessions     = make(map[string]map[string]*sessionEntry)
+	cleanupTick  = time.NewTicker(30 * time.Second)
+)
+
+func init() {
+	go func() {
+		for range cleanupTick.C {
+			cleanExpired()
+		}
+	}()
+}
+
+// RecordSession records that a session was active for the given apiKey.
+// sessionId should be a unique identifier extracted from the request (e.g. metadata.session_id).
+func RecordSession(apiKey, sessionID string) {
+	if apiKey == "" || sessionID == "" {
+		return
 	}
-	return 0
+	sessionMu.Lock()
+	defer sessionMu.Unlock()
+	m, ok := sessions[apiKey]
+	if !ok {
+		m = make(map[string]*sessionEntry)
+		sessions[apiKey] = m
+	}
+	if e, ok := m[sessionID]; ok {
+		e.lastSeen = time.Now()
+	} else {
+		m[sessionID] = &sessionEntry{lastSeen: time.Now()}
+	}
+}
+
+// GetActiveSessions returns the number of distinct active sessions for the given apiKey.
+// A session is considered active if it was seen within the last 60 seconds.
+func GetActiveSessions(apiKey string) int64 {
+	sessionMu.Lock()
+	defer sessionMu.Unlock()
+	m, ok := sessions[apiKey]
+	if !ok {
+		return 0
+	}
+	now := time.Now()
+	count := int64(0)
+	for _, e := range m {
+		if now.Sub(e.lastSeen) < sessionTTL {
+			count++
+		}
+	}
+	return count
+}
+
+// cleanExpired removes sessions not seen within sessionTTL.
+func cleanExpired() {
+	sessionMu.Lock()
+	defer sessionMu.Unlock()
+	now := time.Now()
+	for apiKey, m := range sessions {
+		for sid, e := range m {
+			if now.Sub(e.lastSeen) >= sessionTTL {
+				delete(m, sid)
+			}
+		}
+		if len(m) == 0 {
+			delete(sessions, apiKey)
+		}
+	}
 }

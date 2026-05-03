@@ -255,39 +255,12 @@ func requestLogMiddleware(next http.Handler, s *store.Store) http.Handler {
 		r = store.InitModel(r)
 		r = store.InitAccountModel(r)
 
-		// Track active sessions for /v1/ requests
-		if strings.HasPrefix(r.URL.Path, "/v1/") {
-			ak := r.Header.Get("x-api-key")
-			if ak == "" {
-				authHeader := r.Header.Get("Authorization")
-				if strings.HasPrefix(authHeader, "Bearer ") {
-					ak = strings.TrimPrefix(authHeader, "Bearer ")
-				}
-			}
-			var resolvedKey string
-			if ak != "" {
-				if account, _ := s.GetAccountByToken(ak); account != nil {
-					resolvedKey = account.APIKey
-				} else if account, _ := s.GetAccount(ak); account != nil {
-					resolvedKey = account.APIKey
-				}
-			}
-			if resolvedKey == "" {
-				if a, _ := s.GetDefaultAccount(); a != nil {
-					resolvedKey = a.APIKey
-				}
-			}
-			if resolvedKey != "" {
-				done := proxy.TrackActive(resolvedKey)
-				defer done()
-			}
-		}
-
 		// Assign request ID for log correlation
 		reqID := atomic.AddUint64(&requestCounter, 1)
 		r = anthropic.WithRequestID(r, reqID)
 
-		// Resolve account default model for handlers
+		// Resolve account from API key/token (used for model, session tracking, logging)
+		var resolvedAccount *store.Account
 		if s != nil {
 			ak := r.Header.Get("x-api-key")
 			if ak == "" {
@@ -295,26 +268,26 @@ func requestLogMiddleware(next http.Handler, s *store.Store) http.Handler {
 					ak = strings.TrimPrefix(auth, "Bearer ")
 				}
 			}
-			var acc *store.Account
 			if ak != "" {
 				if a, _ := s.GetAccountByToken(ak); a != nil {
-					acc = a
+					resolvedAccount = a
 				} else if a, _ := s.GetAccount(ak); a != nil {
-					acc = a
+					resolvedAccount = a
 				}
 			}
-			if acc == nil {
+			if resolvedAccount == nil {
 				if a, _ := s.GetDefaultAccount(); a != nil {
-					acc = a
+					resolvedAccount = a
 				}
 			}
-			if acc != nil {
-				store.SetAccountDefaultModel(r, acc.DefaultModel)
+			if resolvedAccount != nil {
+				store.SetAccountDefaultModel(r, resolvedAccount.DefaultModel)
 			}
 		}
 
-		// Peek at body to extract model before handler consumes it
+		// Peek at body to extract model + session_id before handler consumes it
 		var model string
+		var sessionID string
 		if r.Method == "POST" && r.Body != nil {
 			bodyBytes, _ := io.ReadAll(io.LimitReader(r.Body, 100<<20))
 			r.Body.Close()
@@ -324,7 +297,21 @@ func requestLogMiddleware(next http.Handler, s *store.Store) http.Handler {
 				if m, ok := body["model"].(string); ok {
 					model = m
 				}
+				// Extract session_id from Claude Code metadata
+				if meta, ok := body["metadata"].(map[string]interface{}); ok {
+					if sid, ok := meta["session_id"].(string); ok && sid != "" {
+						sessionID = sid
+					}
+				}
 			}
+		}
+
+		// Record session activity for /v1/ proxy requests
+		if strings.HasPrefix(r.URL.Path, "/v1/") && resolvedAccount != nil {
+			if sessionID == "" {
+				sessionID = r.RemoteAddr // fallback: unique per client IP
+			}
+			proxy.RecordSession(resolvedAccount.APIKey, sessionID)
 		}
 
 		rw := &responseWriter{ResponseWriter: w, statusCode: 200}

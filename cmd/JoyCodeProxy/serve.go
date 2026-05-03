@@ -23,6 +23,7 @@ import (
 	"github.com/vibe-coding-labs/JoyCodeProxy/pkg/dashboard"
 	"github.com/vibe-coding-labs/JoyCodeProxy/pkg/joycode"
 	"github.com/vibe-coding-labs/JoyCodeProxy/pkg/openai"
+	"github.com/vibe-coding-labs/JoyCodeProxy/pkg/proxy"
 	"github.com/vibe-coding-labs/JoyCodeProxy/pkg/store"
 )
 
@@ -253,6 +254,34 @@ func requestLogMiddleware(next http.Handler, s *store.Store) http.Handler {
 		r = store.InitTokenUsage(r)
 		r = store.InitModel(r)
 		r = store.InitAccountModel(r)
+
+		// Track active sessions for /v1/ requests
+		if strings.HasPrefix(r.URL.Path, "/v1/") {
+			ak := r.Header.Get("x-api-key")
+			if ak == "" {
+				authHeader := r.Header.Get("Authorization")
+				if strings.HasPrefix(authHeader, "Bearer ") {
+					ak = strings.TrimPrefix(authHeader, "Bearer ")
+				}
+			}
+			var resolvedKey string
+			if ak != "" {
+				if account, _ := s.GetAccountByToken(ak); account != nil {
+					resolvedKey = account.APIKey
+				} else if account, _ := s.GetAccount(ak); account != nil {
+					resolvedKey = account.APIKey
+				}
+			}
+			if resolvedKey == "" {
+				if a, _ := s.GetDefaultAccount(); a != nil {
+					resolvedKey = a.APIKey
+				}
+			}
+			if resolvedKey != "" {
+				done := proxy.TrackActive(resolvedKey)
+				defer done()
+			}
+		}
 
 		// Assign request ID for log correlation
 		reqID := atomic.AddUint64(&requestCounter, 1)

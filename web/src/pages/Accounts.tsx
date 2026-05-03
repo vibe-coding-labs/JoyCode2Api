@@ -6,14 +6,14 @@ import {
 import {
   PlusOutlined, DeleteOutlined, StarOutlined,
   SafetyCertificateOutlined, ReloadOutlined,
-  QuestionCircleOutlined,
+  QuestionCircleOutlined, ClearOutlined, EditOutlined,
 } from '@ant-design/icons';
 import SvgClaudeCode from '../components/ClaudeCodeIcon';
 import SvgCodex from '../components/CodexIcon';
 import CommandTooltip from '../components/CommandTooltip';
 import QRLoginModal from '../components/QRLoginModal';
 import { useNavigate } from 'react-router-dom';
-import { api } from '../api';
+import { api, setToken } from '../api';
 import type { Account } from '../api';
 
 const BUILTIN_MODELS = [
@@ -28,6 +28,12 @@ const BUILTIN_MODELS = [
 ];
 
 const getBaseURL = () => `http://${window.location.host}`;
+
+const maskUserId = (id: string): string => {
+  if (!id) return '-';
+  if (id.length <= 3) return id[0] + '***';
+  return id.slice(0, 2) + '***' + id.slice(-2);
+};
 
 const claudeCodeCmd = (apiKey: string, model = 'GLM-5.1') => [
   `API_TIMEOUT_MS=6000000 \\`,
@@ -64,6 +70,9 @@ const Accounts: React.FC = () => {
   const [validating, setValidating] = useState<string | null>(null);
   const [autoLogging, setAutoLogging] = useState(false);
   const [qrModalOpen, setQrModalOpen] = useState(false);
+  const [renameModalOpen, setRenameModalOpen] = useState(false);
+  const [renameTarget, setRenameTarget] = useState<string>('');
+  const [renameForm] = Form.useForm();
 
   const fetchAccounts = async () => {
     setLoading(true);
@@ -78,6 +87,28 @@ const Accounts: React.FC = () => {
   };
 
   useEffect(() => { fetchAccounts(); }, []);
+
+  useEffect(() => {
+    const params = new URLSearchParams(window.location.search);
+    const loginSuccess = params.get('login_success');
+    const loginError = params.get('login_error');
+    if (loginSuccess) {
+      // Read auto-issued JWT from cookie set by OAuth callback
+      const jwtCookie = document.cookie.split('; ').find(c => c.startsWith('joycode_auto_jwt='));
+      if (jwtCookie) {
+        const token = jwtCookie.split('=')[1];
+        if (token) setToken(token);
+        document.cookie = 'joycode_auto_jwt=; path=/; max-age=0';
+      }
+      message.success(`登录成功！账号「${loginSuccess}」已添加`);
+      fetchAccounts();
+      window.history.replaceState({}, '', window.location.pathname);
+    }
+    if (loginError) {
+      message.error(`登录失败：${loginError}`);
+      window.history.replaceState({}, '', window.location.pathname);
+    }
+  }, []);
 
   const handleAdd = async (values: { api_key: string; pt_key: string; user_id: string; is_default?: boolean; default_model?: string }) => {
     try {
@@ -150,6 +181,18 @@ const Accounts: React.FC = () => {
     }
   };
 
+  const handleRename = async (values: { new_name: string }) => {
+    try {
+      await api.renameAccount(renameTarget, values.new_name);
+      message.success(`账号已重命名为「${values.new_name}」`);
+      setRenameModalOpen(false);
+      renameForm.resetFields();
+      fetchAccounts();
+    } catch (e: unknown) {
+      message.error(e instanceof Error ? e.message : '重命名失败');
+    }
+  };
+
   const columns = [
     {
       title: '账户名',
@@ -173,6 +216,19 @@ const Accounts: React.FC = () => {
       title: '用户 ID',
       dataIndex: 'user_id',
       key: 'user_id',
+      render: (text: string) => (
+        <Typography.Text type="secondary" style={{ fontSize: 13 }}>{maskUserId(text)}</Typography.Text>
+      ),
+    },
+    {
+      title: '活跃会话',
+      dataIndex: 'active_sessions',
+      key: 'active_sessions',
+      render: (val: number) => val > 0 ? (
+        <Tag color="blue">{val} 个活跃</Tag>
+      ) : (
+        <Typography.Text type="secondary">无</Typography.Text>
+      ),
     },
     {
       title: '状态',
@@ -220,6 +276,14 @@ const Accounts: React.FC = () => {
       key: 'actions',
       render: (_: unknown, record: Account) => (
         <Space>
+          <Button size="small" onClick={(e) => {
+            e.stopPropagation();
+            setRenameTarget(record.api_key);
+            renameForm.setFieldsValue({ new_name: record.api_key });
+            setRenameModalOpen(true);
+          }}>
+            <EditOutlined /> 重命名
+          </Button>
           {!record.is_default && (
             <Button size="small" onClick={(e) => { e.stopPropagation(); handleSetDefault(record.api_key); }}>
               <StarOutlined /> 设为默认
@@ -258,10 +322,19 @@ const Accounts: React.FC = () => {
         <Space>
           <Button onClick={fetchAccounts} icon={<ReloadOutlined />}>刷新</Button>
           <Button
-            onClick={() => setQrModalOpen(true)}
+            onClick={async () => {
+              try {
+                const result = await api.browserLogin();
+                window.open(result.url, '_blank');
+                message.info('请在浏览器中完成登录，登录成功后会自动同步到此处');
+                setTimeout(() => fetchAccounts(), 10000);
+              } catch (e: unknown) {
+                message.error(e instanceof Error ? e.message : '获取登录链接失败');
+              }
+            }}
             icon={<SafetyCertificateOutlined />}
           >
-            扫码登录
+            浏览器登录
           </Button>
           <Button
             type="primary"
@@ -269,8 +342,24 @@ const Accounts: React.FC = () => {
             loading={autoLogging}
             icon={<SafetyCertificateOutlined />}
           >
-            一键登录
+            一键导入本地JoyCode已登录账户
           </Button>
+          <Popconfirm
+            title="确定要清空本地 JoyCode IDE 的登录会话吗？"
+            description="清除后 JoyCode IDE 将需要重新登录，此操作不影响已导入的账号"
+            onConfirm={async () => {
+              try {
+                const result = await api.clearJoyCodeSession();
+                message.success(result.message || 'JoyCode 本地会话已清除');
+              } catch (e: unknown) {
+                message.error(e instanceof Error ? e.message : '清除会话失败');
+              }
+            }}
+          >
+            <Button danger icon={<ClearOutlined />}>
+              清空本地JoyCode会话
+            </Button>
+          </Popconfirm>
           <Button onClick={() => setModalOpen(true)} icon={<PlusOutlined />}>
             手动添加
           </Button>
@@ -294,7 +383,7 @@ const Accounts: React.FC = () => {
           onClick: () => navigate(`/accounts/${encodeURIComponent(record.api_key)}`),
           style: { cursor: 'pointer' },
         })}
-        locale={{ emptyText: '暂无账号，请点击「一键登录」或「手动添加」按钮配置您的第一个 JoyCode 账号' }}
+        locale={{ emptyText: '暂无账号，请点击「一键导入」或「浏览器登录」按钮配置您的第一个 JoyCode 账号' }}
       />
 
       <Modal
@@ -310,7 +399,7 @@ const Accounts: React.FC = () => {
           type="info"
           showIcon
           message="手动添加账号"
-          description="填写 JoyCode 客户端凭证信息。推荐使用「一键登录」自动导入，此处适合手动配置多个账号。"
+          description="填写 JoyCode 客户端凭证信息。推荐使用「一键导入」自动导入本地已登录账户，此处适合手动配置多个账号。"
           style={{ marginBottom: 16 }}
         />
         <Form form={form} layout="vertical" onFinish={handleAdd}>
@@ -390,10 +479,30 @@ const Accounts: React.FC = () => {
         </Form>
       </Modal>
 
+      <Modal
+        title="重命名账号"
+        open={renameModalOpen}
+        onCancel={() => { setRenameModalOpen(false); renameForm.resetFields(); }}
+        onOk={() => renameForm.submit()}
+        okText="确认"
+        cancelText="取消"
+      >
+        <Form form={renameForm} layout="vertical" onFinish={handleRename}>
+          <Form.Item
+            name="new_name"
+            label="新账户名"
+            rules={[{ required: true, message: '请输入新的账户名' }]}
+          >
+            <Input placeholder="输入新的账户名，例如：我的主账号" />
+          </Form.Item>
+        </Form>
+      </Modal>
+
       <QRLoginModal
         open={qrModalOpen}
         onClose={() => setQrModalOpen(false)}
         onSuccess={fetchAccounts}
+        onAutoLogin={handleAutoLogin}
       />
     </div>
   );

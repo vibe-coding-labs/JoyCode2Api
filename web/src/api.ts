@@ -5,6 +5,7 @@ export interface Account {
   is_default: boolean;
   default_model: string;
   created_at?: string;
+  active_sessions: number;
 }
 
 export interface ModelInfo {
@@ -187,9 +188,17 @@ export const api = {
   qrLoginInit: () =>
     request<{ ok: boolean; session_id: string; qr_image: string }>('/api/qr-login/init', { method: 'POST' }),
   qrLoginStatus: (sessionId: string) =>
-    request<{ status: string; ok?: boolean; api_key?: string; user_id?: string; real_name?: string; message?: string }>(`/api/qr-login/status?session=${encodeURIComponent(sessionId)}`),
+    request<{ status: string; ok?: boolean; api_key?: string; user_id?: string; real_name?: string; message?: string; verify_url?: string; risk_code?: number }>(`/api/qr-login/status?session=${encodeURIComponent(sessionId)}`),
+  browserLogin: () =>
+    request<{ ok: boolean; url: string; token: string }>('/api/browser-login', { method: 'POST' }),
   getRecentErrors: (limit = 50) =>
     request<{ errors: RequestLog[]; total: number }>(`/api/errors?limit=${limit}`),
   getGitHubStars: () =>
     request<{ stars: number }>('/api/github-stars').then(r => r.stars),
+  clearAllAccounts: () =>
+    request<{ ok: boolean; count: number }>('/api/accounts-clear-all', { method: 'POST' }),
+  clearJoyCodeSession: () =>
+    request<{ ok: boolean; message: string }>('/api/clear-joycode-session', { method: 'POST' }),
+  renameAccount: (apiKey: string, newName: string) =>
+    request<{ ok: boolean; old_key: string; new_key: string }>(`/api/accounts/${encodeURIComponent(apiKey)}/rename`, { method: 'PUT', body: JSON.stringify({ new_api_key: newName }) }),
 };

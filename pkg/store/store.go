@@ -35,12 +35,13 @@ type Account struct {
 }
 
 type AccountInfo struct {
-	APIKey       string `json:"api_key"`
-	APIToken     string `json:"api_token"`
-	UserID       string `json:"user_id"`
-	IsDefault    bool   `json:"is_default"`
-	DefaultModel string `json:"default_model"`
-	CreatedAt    string `json:"created_at,omitempty"`
+	APIKey        string `json:"api_key"`
+	APIToken      string `json:"api_token"`
+	UserID        string `json:"user_id"`
+	IsDefault     bool   `json:"is_default"`
+	DefaultModel  string `json:"default_model"`
+	CreatedAt     string `json:"created_at,omitempty"`
+	ActiveSessions int64 `json:"active_sessions"`
 }
 
 type Stats struct {
@@ -490,6 +491,34 @@ func (s *Store) RemoveAccount(apiKey string) error {
 		slog.Error("store: remove account failed", "api_key", apiKey, "error", err)
 	}
 	return err
+}
+
+func (s *Store) ClearAllAccounts() (int, error) {
+	result, err := s.db.Exec("DELETE FROM accounts")
+	if err != nil {
+		slog.Error("store: clear all accounts failed", "error", err)
+		return 0, err
+	}
+	n, _ := result.RowsAffected()
+	return int(n), nil
+}
+
+func (s *Store) RenameAccount(oldKey, newKey string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	result, err := s.db.Exec("UPDATE accounts SET api_key = ?, updated_at = datetime('now', 'localtime') WHERE api_key = ?", newKey, oldKey)
+	if err != nil {
+		slog.Error("store: rename account failed", "old_key", oldKey, "new_key", newKey, "error", err)
+		return err
+	}
+	n, _ := result.RowsAffected()
+	if n == 0 {
+		return fmt.Errorf("account %q not found", oldKey)
+	}
+	// Also update request_logs
+	s.db.Exec("UPDATE request_logs SET api_key = ? WHERE api_key = ?", newKey, oldKey)
+	return nil
 }
 
 func (s *Store) SetDefault(apiKey string) error {

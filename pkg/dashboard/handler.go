@@ -2,21 +2,27 @@ package dashboard
 
 import (
 	"crypto/rand"
+	"database/sql"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"io/fs"
 	"log/slog"
+	"net"
 	"net/http"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
 	"sync"
 	"time"
 
+	_ "github.com/mattn/go-sqlite3"
 	"github.com/vibe-coding-labs/JoyCodeProxy/pkg/auth"
 	"github.com/vibe-coding-labs/JoyCodeProxy/pkg/joycode"
+	"github.com/vibe-coding-labs/JoyCodeProxy/pkg/proxy"
 	"github.com/vibe-coding-labs/JoyCodeProxy/pkg/store"
 )
 
@@ -45,6 +51,10 @@ func (h *Handler) RegisterRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("/api/accounts", h.handleAccounts)
 	mux.HandleFunc("/api/accounts/", h.handleAccountAction)
 	mux.HandleFunc("/api/accounts-auto-login", h.handleAutoLogin)
+	mux.HandleFunc("/api/accounts-clear-all", h.handleClearAllAccounts)
+	mux.HandleFunc("/api/clear-joycode-session", h.handleClearJoyCodeSession)
+	mux.HandleFunc("/api/browser-login", h.handleBrowserLogin)
+	mux.HandleFunc("/api/oauth-callback", h.handleOAuthCallback)
 	mux.HandleFunc("/api/qr-login/init", h.handleQRLoginInit)
 	mux.HandleFunc("/api/qr-login/status", h.handleQRLoginStatus)
 	mux.HandleFunc("/api/models", h.handleModels)
@@ -162,6 +172,13 @@ func (h *Handler) handleErrors(w http.ResponseWriter, r *http.Request) {
 // ServeStatic serves the SPA frontend for non-API routes.
 func (h *Handler) ServeStatic(w http.ResponseWriter, r *http.Request) {
 	path := r.URL.Path
+
+	// Handle JoyCode OAuth callback on root path: /?pt_key=xxx
+	if path == "/" && r.URL.Query().Get("pt_key") != "" {
+		h.handleOAuthCallback(w, r)
+		return
+	}
+
 	if path == "/" {
 		path = "/index.html"
 	}
@@ -447,6 +464,9 @@ func (h *Handler) listAccounts(w http.ResponseWriter, r *http.Request) {
 	if accounts == nil {
 		accounts = []store.AccountInfo{}
 	}
+	for i := range accounts {
+		accounts[i].ActiveSessions = proxy.GetActiveSessions(accounts[i].APIKey)
+	}
 	writeJSON(w, http.StatusOK, map[string]interface{}{"accounts": accounts})
 }
 
@@ -551,6 +571,147 @@ func (h *Handler) handleAutoLogin(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
+func (h *Handler) handleClearAllAccounts(w http.ResponseWriter, r *http.Request) {
+	setCors(w)
+	if r.Method == http.MethodOptions {
+		w.WriteHeader(http.StatusNoContent)
+		return
+	}
+	if r.Method != http.MethodPost {
+		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
+		return
+	}
+
+	n, err := h.store.ClearAllAccounts()
+	if err != nil {
+		slog.Error("clear-all-accounts: failed", "error", err)
+		writeError(w, http.StatusInternalServerError, "清空账号失败: "+err.Error())
+		return
+	}
+
+	slog.Info("clear-all-accounts: all accounts deleted", "count", n)
+	writeJSON(w, http.StatusOK, map[string]interface{}{
+		"ok":    true,
+		"count": n,
+	})
+}
+
+func (h *Handler) handleBrowserLogin(w http.ResponseWriter, r *http.Request) {
+	setCors(w)
+	if r.Method == http.MethodOptions {
+		w.WriteHeader(http.StatusNoContent)
+		return
+	}
+	if r.Method != http.MethodPost {
+		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
+		return
+	}
+
+	host := r.Host
+	port := "34891"
+	if _, p, err := net.SplitHostPort(host); err == nil {
+		port = p
+	} else if strings.Contains(host, ":") {
+		_, port, _ = net.SplitHostPort(host)
+	}
+
+	b := make([]byte, 16)
+	if _, err := rand.Read(b); err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to generate token")
+		return
+	}
+	token := hex.EncodeToString(b)
+
+	loginURL := fmt.Sprintf(
+		"https://joycode.jd.com/login/?ideAppName=JoyCode&fromIde=ide&redirect=0&authPort=%s&authKey=%s",
+		url.QueryEscape(port), url.QueryEscape(token),
+	)
+
+	slog.Info("browser-login: generated login URL", "port", port, "token", token)
+
+	writeJSON(w, http.StatusOK, map[string]interface{}{
+		"ok":    true,
+		"url":   loginURL,
+		"token": token,
+	})
+}
+
+func (h *Handler) handleOAuthCallback(w http.ResponseWriter, r *http.Request) {
+	setCors(w)
+
+	ptKey := r.URL.Query().Get("pt_key")
+	loginType := r.URL.Query().Get("login_type")
+	tenant := r.URL.Query().Get("tenant")
+	authKey := r.URL.Query().Get("authKey")
+
+	slog.Info("oauth-callback: received", "login_type", loginType, "tenant", tenant, "auth_key", authKey, "pt_key_len", len(ptKey))
+
+	if ptKey == "" {
+		writeError(w, http.StatusBadRequest, "missing pt_key parameter")
+		return
+	}
+
+	client := joycode.NewClient(ptKey, "")
+	userInfo, err := client.UserInfo()
+	if err != nil {
+		slog.Error("oauth-callback: userInfo validation failed", "error", err)
+		http.Redirect(w, r, "/?login_error="+url.QueryEscape(err.Error()), http.StatusFound)
+		return
+	}
+
+	code, _ := userInfo["code"].(float64)
+	if code != 0 {
+		msg, _ := userInfo["msg"].(string)
+		slog.Error("oauth-callback: userInfo API error", "code", code, "msg", msg)
+		http.Redirect(w, r, "/?login_error="+url.QueryEscape(msg), http.StatusFound)
+		return
+	}
+
+	userID, _ := userInfo["userId"].(string)
+	apiKey := userID
+	realName := ""
+	if data, ok := userInfo["data"].(map[string]interface{}); ok {
+		if name, ok := data["realName"].(string); ok && name != "" {
+			apiKey = name
+			realName = name
+		}
+	}
+
+	isDefault := true
+	accounts, _ := h.store.ListAccounts()
+	for _, a := range accounts {
+		if a.IsDefault {
+			isDefault = false
+			break
+		}
+	}
+
+	if err := h.store.AddAccount(apiKey, ptKey, userID, isDefault, "GLM-5.1"); err != nil {
+		slog.Error("oauth-callback: save account failed", "api_key", apiKey, "error", err)
+		http.Redirect(w, r, "/?login_error="+url.QueryEscape(err.Error()), http.StatusFound)
+		return
+	}
+
+	slog.Info("oauth-callback: account saved", "api_key", apiKey, "user_id", userID, "real_name", realName)
+
+	// Auto-issue JWT so the frontend dashboard is immediately accessible
+	jwtSecret := h.store.GetSetting("auth_jwt_secret")
+	if jwtSecret != "" {
+		if token, err := auth.GenerateToken(apiKey, jwtSecret, 7*24*time.Hour); err == nil {
+			http.SetCookie(w, &http.Cookie{
+				Name:     "joycode_auto_jwt",
+				Value:    token,
+				Path:     "/",
+				MaxAge:   30,
+				HttpOnly: false,
+				SameSite: http.SameSiteLaxMode,
+			})
+		}
+	}
+
+	http.Redirect(w, r, "/?login_success="+url.QueryEscape(apiKey), http.StatusFound)
+}
+
 func (h *Handler) handleQRLoginInit(w http.ResponseWriter, r *http.Request) {
 	setCors(w)
 	if r.Method == http.MethodOptions {
@@ -596,9 +757,17 @@ func (h *Handler) handleQRLoginStatus(w http.ResponseWriter, r *http.Request) {
 	status, result, err := auth.QRPollStatus(sessionID)
 	if err != nil {
 		slog.Error("qr-login poll", "session", sessionID, "error", err)
-		writeJSON(w, http.StatusOK, map[string]interface{}{
-			"status": "error", "message": err.Error(),
-		})
+		resp := map[string]interface{}{
+			"status":  "error",
+			"message": err.Error(),
+		}
+		var verifyErr *auth.QRVerifyNeededError
+		if errors.As(err, &verifyErr) {
+			resp["status"] = "verification_required"
+			resp["verify_url"] = verifyErr.VerifyURL
+			resp["risk_code"] = verifyErr.RiskCode
+		}
+		writeJSON(w, http.StatusOK, resp)
 		return
 	}
 
@@ -684,6 +853,8 @@ func (h *Handler) handleAccountAction(w http.ResponseWriter, r *http.Request) {
 		h.getAccountLogs(w, r, apiKey)
 	case action == "renew-token" && r.Method == http.MethodPost:
 		h.renewToken(w, r, apiKey)
+	case action == "rename" && r.Method == http.MethodPut:
+		h.renameAccount(w, r, apiKey)
 	default:
 		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
 	}
@@ -815,6 +986,82 @@ func (h *Handler) renewToken(w http.ResponseWriter, r *http.Request, apiKey stri
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]interface{}{"ok": true, "api_token": token})
+}
+
+func (h *Handler) renameAccount(w http.ResponseWriter, r *http.Request, apiKey string) {
+	var body struct {
+		NewAPIKey string `json:"new_api_key"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil || body.NewAPIKey == "" {
+		writeError(w, http.StatusBadRequest, "missing new_api_key")
+		return
+	}
+	if body.NewAPIKey == apiKey {
+		writeError(w, http.StatusBadRequest, "new name is same as current")
+		return
+	}
+	if err := h.store.RenameAccount(apiKey, body.NewAPIKey); err != nil {
+		slog.Error("rename account", "old_key", apiKey, "new_key", body.NewAPIKey, "error", err)
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]interface{}{"ok": true, "old_key": apiKey, "new_key": body.NewAPIKey})
+}
+
+func (h *Handler) handleClearJoyCodeSession(w http.ResponseWriter, r *http.Request) {
+	setCors(w)
+	if r.Method == http.MethodOptions {
+		w.WriteHeader(http.StatusNoContent)
+		return
+	}
+	if r.Method != http.MethodPost {
+		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
+		return
+	}
+
+	home, err := os.UserHomeDir()
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "cannot determine home directory")
+		return
+	}
+	dbPath := filepath.Join(home, "Library", "Application Support", "JoyCode", "User", "globalStorage", "state.vscdb")
+	if _, err := os.Stat(dbPath); os.IsNotExist(err) {
+		writeError(w, http.StatusNotFound, "JoyCode 本地数据库不存在，请先安装 JoyCode IDE")
+		return
+	}
+
+	db, err := sql.Open("sqlite3", dbPath+"?mode=rw")
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "无法打开 JoyCode 数据库: "+err.Error())
+		return
+	}
+	defer db.Close()
+
+	result, err := db.Exec("DELETE FROM ItemTable WHERE key IN ('JoyCoder.IDE', 'joycode.storageUser')")
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "清除会话失败: "+err.Error())
+		return
+	}
+	n, _ := result.RowsAffected()
+
+	// Also clear jdhLoginInfo from JoyCode.joycoder-editor to prevent auto-restore
+	var editorVal string
+	if err := db.QueryRow("SELECT value FROM ItemTable WHERE key = 'JoyCode.joycoder-editor'").Scan(&editorVal); err == nil {
+		var editor map[string]interface{}
+		if json.Unmarshal([]byte(editorVal), &editor) == nil {
+			delete(editor, "jdhLoginInfo")
+			if newVal, err := json.Marshal(editor); err == nil {
+				db.Exec("UPDATE ItemTable SET value = ? WHERE key = 'JoyCode.joycoder-editor'", string(newVal))
+				n++
+			}
+		}
+	}
+
+	slog.Info("clear-joycode-session: cleared", "rows_affected", n)
+	writeJSON(w, http.StatusOK, map[string]interface{}{
+		"ok":      true,
+		"message": fmt.Sprintf("JoyCode 本地会话已彻底清除（影响 %d 条记录），请重新打开 JoyCode IDE 登录", n),
+	})
 }
 
 // --- Model Handlers ---

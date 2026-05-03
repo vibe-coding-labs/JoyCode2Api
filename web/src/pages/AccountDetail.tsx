@@ -277,7 +277,7 @@ const AccountDetail: React.FC = () => {
             {account.is_default && <Tag color="blue">默认</Tag>}
           </div>
           <Typography.Text type="secondary" style={{ fontSize: 12 }}>
-            {account.user_id} · 创建于 {account.created_at?.slice(0, 10) || '-'}
+            {account.user_id ? account.user_id.slice(0, 2) + '***' + account.user_id.slice(-2) : '-'} · 创建于 {account.created_at?.slice(0, 10) || '-'}
           </Typography.Text>
           <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginTop: 4 }}>
             <Typography.Text type="secondary" style={{ fontSize: 12 }}>Token:</Typography.Text>

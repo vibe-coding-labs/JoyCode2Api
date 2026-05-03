@@ -109,6 +109,7 @@ const AccountDetail: React.FC = () => {
   const [modelLoading, setModelLoading] = useState(false);
   const [savingModel, setSavingModel] = useState(false);
   const [logFilter, setLogFilter] = useState<string>('all');
+  const [activeSessions, setActiveSessions] = useState(0);
 
   const decodedKey = apiKey ? decodeURIComponent(apiKey) : '';
 
@@ -145,6 +146,20 @@ const AccountDetail: React.FC = () => {
 
   useEffect(() => { fetchData(); }, [decodedKey]);
   useEffect(() => { fetchModels(); }, [decodedKey]);
+
+  // Poll active sessions every 5s
+  useEffect(() => {
+    const poll = async () => {
+      try {
+        const accounts = await api.listAccounts();
+        const acc = accounts.find((a) => a.api_key === decodedKey);
+        if (acc) setActiveSessions(acc.active_sessions);
+      } catch { /* ignore */ }
+    };
+    poll();
+    const id = setInterval(poll, 5000);
+    return () => clearInterval(id);
+  }, [decodedKey]);
 
   const handleModelChange = async (newModel: string) => {
     setSavingModel(true);
@@ -285,6 +300,19 @@ const AccountDetail: React.FC = () => {
               {account.api_token}
             </Typography.Text>
           </div>
+          <div style={{ marginTop: 6 }}>
+            {activeSessions > 0 ? (
+              <Badge status="processing" color="blue" text={
+                <Typography.Text style={{ fontSize: 12, color: '#1890ff' }}>
+                  {activeSessions} 个活跃会话
+                </Typography.Text>
+              } />
+            ) : (
+              <Badge status="default" text={
+                <Typography.Text type="secondary" style={{ fontSize: 12 }}>无活跃会话</Typography.Text>
+              } />
+            )}
+          </div>
         </div>
         <Space>
           <Tooltip title="此模型的用途仅限生成下方的快速启动命令。实际请求中的模型由客户端指定（如 ANTHROPIC_MODEL 环境变量），始终优先于本设置。模型列表来自 JoyCode API 支持的模型 + 服务器动态获取的扩展模型。">
@@ -395,6 +423,28 @@ const AccountDetail: React.FC = () => {
             </div>
           </Col>
         </Row>
+      </Card>
+
+      {/* Live session status */}
+      <Card
+        size="small"
+        style={{ marginBottom: 16, borderRadius: 8, background: activeSessions > 0 ? '#f6ffed' : '#fafafa', border: activeSessions > 0 ? '1px solid #b7eb8f' : undefined }}
+      >
+        <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
+          <Badge status={activeSessions > 0 ? 'processing' : 'default'} />
+          <Typography.Text strong style={{ fontSize: 13 }}>
+            实时状态
+          </Typography.Text>
+          <Typography.Text style={{ fontSize: 13 }}>
+            当前有 <Typography.Text strong style={{ fontSize: 16, color: activeSessions > 0 ? '#1890ff' : undefined }}>{activeSessions}</Typography.Text> 个活跃连接
+          </Typography.Text>
+          {activeSessions > 0 && (
+            <Tag color="blue">请求处理中</Tag>
+          )}
+          <Typography.Text type="secondary" style={{ fontSize: 11, marginLeft: 'auto' }}>
+            每 5 秒自动刷新
+          </Typography.Text>
+        </div>
       </Card>
 
       {/* Stats panels */}

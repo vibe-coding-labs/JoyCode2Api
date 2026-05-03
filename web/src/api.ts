@@ -10,6 +10,9 @@ export interface Account {
   today_requests: number;
   total_tokens: number;
   today_tokens: number;
+  credential_valid?: boolean;
+  credential_checked_at?: string;
+  credential_error?: string;
 }
 
 export interface ModelInfo {

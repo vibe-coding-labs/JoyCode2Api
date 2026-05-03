@@ -22,6 +22,7 @@ import (
 	"github.com/vibe-coding-labs/JoyCodeProxy/pkg/auth"
 	"github.com/vibe-coding-labs/JoyCodeProxy/pkg/dashboard"
 	"github.com/vibe-coding-labs/JoyCodeProxy/pkg/joycode"
+	"github.com/vibe-coding-labs/JoyCodeProxy/pkg/keepalive"
 	"github.com/vibe-coding-labs/JoyCodeProxy/pkg/openai"
 	"github.com/vibe-coding-labs/JoyCodeProxy/pkg/proxy"
 	"github.com/vibe-coding-labs/JoyCodeProxy/pkg/store"
@@ -80,6 +81,10 @@ var serveCmd = &cobra.Command{
 
 		srv := openai.NewServer(client, s)
 		anth := anthropic.NewHandler(client, s)
+
+		// Start credential keepalive
+		keeper := keepalive.NewKeeper(s)
+		keeper.Start(10 * time.Hour)
 
 		// Per-request client resolution from database accounts
 		if s != nil {
@@ -165,7 +170,7 @@ var serveCmd = &cobra.Command{
 		// Register dashboard API routes + static file serving
 		if s != nil {
 			subFS, _ := fs.Sub(staticFiles, "static")
-			dash := dashboard.NewHandler(s, subFS)
+			dash := dashboard.NewHandler(s, subFS, keeper)
 			dash.RegisterRoutes(mux)
 			mux.HandleFunc("/", dash.ServeStatic)
 		}
@@ -225,6 +230,7 @@ var serveCmd = &cobra.Command{
 		if err := httpSrv.Shutdown(ctx); err != nil {
 			log.Printf("Server shutdown error: %v", err)
 		}
+		keeper.Stop()
 		if s != nil {
 			s.Close()
 		}

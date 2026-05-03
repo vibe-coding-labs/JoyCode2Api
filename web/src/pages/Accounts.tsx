@@ -261,6 +261,27 @@ const Accounts: React.FC = () => {
       ),
     },
     {
+      title: '凭证',
+      key: 'credential_status',
+      render: (_: unknown, record: Account) => {
+        if (!record.credential_checked_at) {
+          return <Tag>等待检测</Tag>;
+        }
+        if (record.credential_valid) {
+          return (
+            <Tooltip title={`上次检测：${record.credential_checked_at}`}>
+              <Tag color="green">有效</Tag>
+            </Tooltip>
+          );
+        }
+        return (
+          <Tooltip title={record.credential_error || '凭证已过期，请重新登录'}>
+            <Tag color="red">已过期</Tag>
+          </Tooltip>
+        );
+      },
+    },
+    {
       title: '状态',
       dataIndex: 'is_default',
       key: 'is_default',

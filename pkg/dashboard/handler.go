@@ -22,6 +22,7 @@ import (
 	_ "github.com/mattn/go-sqlite3"
 	"github.com/vibe-coding-labs/JoyCodeProxy/pkg/auth"
 	"github.com/vibe-coding-labs/JoyCodeProxy/pkg/joycode"
+	"github.com/vibe-coding-labs/JoyCodeProxy/pkg/keepalive"
 	"github.com/vibe-coding-labs/JoyCodeProxy/pkg/proxy"
 	"github.com/vibe-coding-labs/JoyCodeProxy/pkg/store"
 )
@@ -30,13 +31,15 @@ type Handler struct {
 	store     *store.Store
 	staticFS  fs.FS
 	modelList []string
+	keeper    *keepalive.Keeper
 }
 
-func NewHandler(s *store.Store, staticFS fs.FS) *Handler {
+func NewHandler(s *store.Store, staticFS fs.FS, k *keepalive.Keeper) *Handler {
 	return &Handler{
 		store:     s,
 		staticFS:  staticFS,
 		modelList: joycode.Models,
+		keeper:    k,
 	}
 }
 
@@ -468,6 +471,16 @@ func (h *Handler) listAccounts(w http.ResponseWriter, r *http.Request) {
 		accounts[i].ActiveSessions = proxy.GetActiveSessions(accounts[i].APIKey)
 	}
 	h.store.FillAccountStats(accounts)
+	if h.keeper != nil {
+		statuses := h.keeper.GetAllStatuses()
+		for i := range accounts {
+			if s, ok := statuses[accounts[i].APIKey]; ok {
+				accounts[i].CredentialValid = s.Valid
+				accounts[i].CredentialCheckedAt = s.LastChecked.Format("2006-01-02 15:04:05")
+				accounts[i].CredentialError = s.ErrorMessage
+			}
+		}
+	}
 	writeJSON(w, http.StatusOK, map[string]interface{}{"accounts": accounts})
 }
 

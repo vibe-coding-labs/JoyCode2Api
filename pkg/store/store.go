@@ -44,8 +44,11 @@ type AccountInfo struct {
 	ActiveSessions  int64  `json:"active_sessions"`
 	TotalRequests   int    `json:"total_requests"`
 	TodayRequests   int    `json:"today_requests"`
-	TotalTokens     int    `json:"total_tokens"`
-	TodayTokens     int    `json:"today_tokens"`
+	TotalTokens         int    `json:"total_tokens"`
+	TodayTokens         int    `json:"today_tokens"`
+	CredentialValid     bool   `json:"credential_valid,omitempty"`
+	CredentialCheckedAt string `json:"credential_checked_at,omitempty"`
+	CredentialError     string `json:"credential_error,omitempty"`
 }
 
 type Stats struct {
@@ -564,6 +567,51 @@ func (s *Store) ClearAllAccounts() (int, error) {
 	}
 	n, _ := result.RowsAffected()
 	return int(n), nil
+}
+
+// UpdatePtKey updates the encrypted pt_key for an account.
+func (s *Store) UpdatePtKey(apiKey, ptKey string) error {
+	encPtKey, err := s.encrypt(ptKey)
+	if err != nil {
+		slog.Error("store: encrypt pt_key for update failed", "api_key", apiKey, "error", err)
+		return fmt.Errorf("encrypt pt_key: %w", err)
+	}
+	_, err = s.db.Exec(
+		"UPDATE accounts SET pt_key = ?, updated_at = datetime('now', 'localtime') WHERE api_key = ?",
+		encPtKey, apiKey,
+	)
+	if err != nil {
+		slog.Error("store: update pt_key failed", "api_key", apiKey, "error", err)
+	}
+	return err
+}
+
+// ListAllAccountsWithCredentials returns all accounts with decrypted pt_keys.
+func (s *Store) ListAllAccountsWithCredentials() ([]Account, error) {
+	rows, err := s.db.Query("SELECT api_key, pt_key, user_id, default_model FROM accounts ORDER BY created_at")
+	if err != nil {
+		slog.Error("store: list accounts with credentials query failed", "error", err)
+		return nil, err
+	}
+	defer rows.Close()
+
+	var accounts []Account
+	for rows.Next() {
+		var a Account
+		var encPtKey string
+		if err := rows.Scan(&a.APIKey, &encPtKey, &a.UserID, &a.DefaultModel); err != nil {
+			slog.Error("store: list accounts with credentials scan failed", "error", err)
+			return nil, err
+		}
+		ptKey, err := s.decrypt(encPtKey)
+		if err != nil {
+			slog.Error("store: decrypt pt_key failed for keepalive", "api_key", a.APIKey, "error", err)
+			continue
+		}
+		a.PtKey = ptKey
+		accounts = append(accounts, a)
+	}
+	return accounts, rows.Err()
 }
 
 func (s *Store) RenameAccount(oldKey, newKey string) error {

@@ -230,6 +230,31 @@ func (c *Client) Validate() error {
 	return nil
 }
 
+// UserInfoWithRefresh calls the UserInfo API and returns the refreshed ptKey
+// from the response data, if present. Returns (refreshedPtKey, nil) on success.
+func (c *Client) UserInfoWithRefresh() (string, error) {
+	resp, err := c.UserInfo()
+	if err != nil {
+		return "", fmt.Errorf("user info request failed: %w", err)
+	}
+	code, ok := resp["code"].(float64)
+	if !ok || code != 0 {
+		msg, _ := resp["msg"].(string)
+		if msg == "" {
+			msg = "unknown error"
+		}
+		return "", fmt.Errorf("user info failed (code=%.0f): %s", code, msg)
+	}
+	data, ok := resp["data"].(map[string]interface{})
+	if !ok {
+		return "", nil
+	}
+	if ptKey, ok := data["ptKey"].(string); ok && ptKey != "" {
+		return ptKey, nil
+	}
+	return "", nil
+}
+
 func truncate(s string, maxLen int) string {
 	if len(s) <= maxLen {
 		return s

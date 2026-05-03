@@ -569,14 +569,34 @@ const AccountDetail: React.FC = () => {
       )}
 
       {/* Hourly trend charts */}
-      {stats && stats.hourly && stats.hourly.length > 0 && (
+      {stats && stats.hourly && stats.hourly.length > 0 && (() => {
+        // Build hourly chart with date-aware keys to avoid cross-day merging
+        const hMap = new Map<string, { count: number; input_tokens: number; output_tokens: number; errors: number }>();
+        for (const h of stats.hourly) {
+          hMap.set(h.hour, h);
+        }
+        const now = new Date();
+        const hourlyChartData: { label: string; count: number; input_tokens: number; output_tokens: number; errors: number }[] = [];
+        for (let i = 23; i >= 0; i--) {
+          const d = new Date(now.getTime() - i * 3600000);
+          const key = `${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')} ${String(d.getHours()).padStart(2, '0')}`;
+          const entry = hMap.get(key);
+          hourlyChartData.push({
+            label: `${String(d.getHours()).padStart(2, '0')}:00`,
+            count: entry?.count ?? 0,
+            input_tokens: entry?.input_tokens ?? 0,
+            output_tokens: entry?.output_tokens ?? 0,
+            errors: entry?.errors ?? 0,
+          });
+        }
+        return (
         <Row gutter={[16, 16]} style={{ marginBottom: 20 }}>
           <Col xs={24} lg={12}>
             <Card title="24 小时请求趋势" size="small">
               <ResponsiveContainer width="100%" height={200}>
-                <AreaChart data={stats.hourly} margin={{ left: -10 }}>
+                <AreaChart data={hourlyChartData} margin={{ left: -10 }}>
                   <CartesianGrid strokeDasharray="3 3" />
-                  <XAxis dataKey="hour" tick={{ fontSize: 11 }} />
+                  <XAxis dataKey="label" tick={{ fontSize: 11 }} interval={2} />
                   <YAxis tick={{ fontSize: 11 }} />
                   <RTooltip />
                   <Area type="monotone" dataKey="count" name="请求数" stroke="#00b578" fill="#00b578" fillOpacity={0.15} />
@@ -588,9 +608,9 @@ const AccountDetail: React.FC = () => {
           <Col xs={24} lg={12}>
             <Card title="24 小时 Token 消耗趋势" size="small">
               <ResponsiveContainer width="100%" height={200}>
-                <AreaChart data={stats.hourly} margin={{ left: -10 }}>
+                <AreaChart data={hourlyChartData} margin={{ left: -10 }}>
                   <CartesianGrid strokeDasharray="3 3" />
-                  <XAxis dataKey="hour" tick={{ fontSize: 11 }} />
+                  <XAxis dataKey="label" tick={{ fontSize: 11 }} interval={2} />
                   <YAxis tick={{ fontSize: 11 }} />
                   <RTooltip />
                   <Area type="monotone" dataKey="input_tokens" name="输入 Token" stroke="#1890ff" fill="#1890ff" fillOpacity={0.15} />
@@ -600,7 +620,8 @@ const AccountDetail: React.FC = () => {
             </Card>
           </Col>
         </Row>
-      )}
+        );
+      })()}
 
       {/* Charts row */}
       {stats && (stats.by_model.length > 0 || endpointData.length > 0) && (

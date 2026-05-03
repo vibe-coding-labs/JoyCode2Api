@@ -755,7 +755,7 @@ func (s *Store) LogRequest(apiKey, model, endpoint string, stream bool, statusCo
 
 func (s *Store) GetStats() (*Stats, error) {
 	stats := &Stats{}
-	tf := "created_at >= datetime('now', '-24 hours')"
+	tf := "date(created_at, 'localtime') = date('now', 'localtime')"
 
 	err := s.db.QueryRow("SELECT COUNT(*) FROM request_logs WHERE "+tf).Scan(&stats.TotalRequests)
 	if err != nil {

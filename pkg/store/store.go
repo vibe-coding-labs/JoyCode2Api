@@ -827,7 +827,7 @@ func (s *Store) GetAllTimeTotals() (*AllTimeTotals, error) {
 
 func (s *Store) GetHourlyStats() ([]HourlyData, error) {
 	rows, err := s.db.Query(`
-		SELECT strftime('%m-%d %H', created_at) as hour,
+		SELECT strftime('%m-%d %H', created_at, 'localtime') as hour,
 			COUNT(*) as count,
 			COALESCE(SUM(input_tokens), 0),
 			COALESCE(SUM(output_tokens), 0),
@@ -899,7 +899,7 @@ func (s *Store) GetAccountStats(apiKey string) (*AccountStats, error) {
 
 	// Hourly breakdown for last 24 hours
 	hRows, err := s.db.Query(`
-		SELECT strftime('%m-%d %H', created_at) as hour,
+		SELECT strftime('%m-%d %H', created_at, 'localtime') as hour,
 			COUNT(*) as count,
 			COALESCE(SUM(input_tokens), 0),
 			COALESCE(SUM(output_tokens), 0),

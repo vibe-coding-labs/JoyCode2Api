@@ -438,7 +438,7 @@ func (s *Store) FillAccountStats(accounts []AccountInfo) {
 			COUNT(*) as req_count,
 			COALESCE(SUM(input_tokens + output_tokens), 0) as token_sum
 		FROM request_logs
-		WHERE date(created_at) = date('now', 'localtime')
+		WHERE date(created_at, 'localtime') = date('now', 'localtime')
 		GROUP BY api_key`)
 	if err != nil {
 		return

@@ -15,6 +15,9 @@ debug
 bin/
 dist/
 out/
+joycode_proxy_bin
+joycode_proxy_bin.bak
+cmd/JoyCodeProxy/JoyCodeProxy
 
 # Dependency directories
 vendor/

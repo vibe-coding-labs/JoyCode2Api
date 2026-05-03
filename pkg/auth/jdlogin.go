@@ -25,7 +25,7 @@ func minInt(a, b int) int {
 const (
 	qrShowURL   = "https://qr.m.jd.com/show?appid=133&size=147&t=%d"
 	qrCheckURL  = "https://qr.m.jd.com/check?appid=133&token=%s&callback=jsonpCallback&_=%d"
-	qrValidURL  = "https://passport.jd.com/uc/qrCodeTicketValidation?t=%s&pageSource=login2025"
+	qrValidURL  = "https://passport.jd.com/uc/qrCodeTicketValidation?t=%s"
 	jdUserAgent = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/133.0.0.0 Safari/537.36"
 )
 
@@ -43,6 +43,16 @@ type QRLoginResult struct {
 	PtPin    string
 	UserID   string
 	RealName string
+}
+
+// QRVerifyNeededError indicates JD requires additional security verification.
+type QRVerifyNeededError struct {
+	RiskCode  int
+	VerifyURL string
+}
+
+func (e *QRVerifyNeededError) Error() string {
+	return fmt.Sprintf("JD 风控验证 (riskCode=%d)，请在浏览器中完成安全验证", e.RiskCode)
 }
 
 var (
@@ -176,44 +186,12 @@ func QRPollStatus(sessionID string) (status string, result *QRLoginResult, err e
 	}
 }
 
-func validateAndFetchInfo(client *http.Client, ticket string) (*QRLoginResult, error) {
-	client.CheckRedirect = func(req *http.Request, via []*http.Request) error {
-		return http.ErrUseLastResponse
-	}
-	defer func() { client.CheckRedirect = nil }()
-
-	reqURL := fmt.Sprintf(qrValidURL, url.QueryEscape(ticket))
-	req, _ := http.NewRequest("GET", reqURL, nil)
-	req.Header.Set("User-Agent", jdUserAgent)
-	resp, err := client.Do(req)
-	if err != nil {
-		return nil, fmt.Errorf("validate ticket: %w", err)
-	}
-	body, _ := io.ReadAll(resp.Body)
-	resp.Body.Close()
-
-	var vResult struct {
-		ReturnCode int    `json:"returnCode"`
-		URL        string `json:"url,omitempty"`
-	}
-	if err := json.Unmarshal(body, &vResult); err != nil {
-		return nil, fmt.Errorf("parse validation: %w", err)
-	}
-	if vResult.ReturnCode != 0 {
-		return nil, fmt.Errorf("ticket validation failed (code=%d)", vResult.ReturnCode)
-	}
-
-	if vResult.URL != "" {
-		rReq, _ := http.NewRequest("GET", vResult.URL, nil)
-		rReq.Header.Set("User-Agent", jdUserAgent)
-		if rResp, err := client.Do(rReq); err == nil {
-			rResp.Body.Close()
-		}
-	}
-
-	var ptKey, ptPin string
-	for _, host := range []string{".jd.com", "passport.jd.com"} {
-		for _, c := range client.Jar.Cookies(&url.URL{Scheme: "https", Host: host}) {
+func extractPtKey(jar http.CookieJar) (ptKey, ptPin string) {
+	for _, host := range []string{
+		"www.jd.com", "passport.jd.com", "home.jd.com",
+		"jd.com", "plogin.m.jd.com", "m.jd.com",
+	} {
+		for _, c := range jar.Cookies(&url.URL{Scheme: "https", Host: host}) {
 			switch c.Name {
 			case "pt_key":
 				ptKey = c.Value
@@ -222,9 +200,120 @@ func validateAndFetchInfo(client *http.Client, ticket string) (*QRLoginResult, e
 			}
 		}
 	}
+	return
+}
+
+func dumpAllCookies(jar http.CookieJar) {
+	hosts := []string{
+		"www.jd.com", "passport.jd.com", "home.jd.com",
+		"jd.com", "plogin.m.jd.com", "m.jd.com",
+		"qr.m.jd.com",
+	}
+	for _, host := range hosts {
+		cookies := jar.Cookies(&url.URL{Scheme: "https", Host: host})
+		for _, c := range cookies {
+			slog.Info("cookie-jar-dump", "host", host, "name", c.Name, "value_len", len(c.Value), "domain", c.Domain)
+		}
+		if len(cookies) == 0 {
+			slog.Info("cookie-jar-dump", "host", host, "count", 0)
+		}
+	}
+}
+
+func validateAndFetchInfo(client *http.Client, ticket string) (*QRLoginResult, error) {
+	reqURL := fmt.Sprintf(qrValidURL, url.QueryEscape(ticket))
+	req, _ := http.NewRequest("GET", reqURL, nil)
+	req.Header.Set("User-Agent", jdUserAgent)
+	req.Header.Set("Referer", "https://passport.jd.com/new/login.aspx")
+
+	// Log redirect chain for diagnostics
+	originalCheckRedirect := client.CheckRedirect
+	var redirectChain []string
+	client.CheckRedirect = func(req *http.Request, via []*http.Request) error {
+		from := via[len(via)-1].URL.String()
+		to := req.URL.String()
+		slog.Info("qr-validate redirect", "from", from, "to", to, "step", len(via))
+		redirectChain = append(redirectChain, from+" -> "+to)
+		if len(via) >= 10 {
+			return fmt.Errorf("too many redirects (%d)", len(via))
+		}
+		return nil
+	}
+
+	resp, err := client.Do(req)
+	client.CheckRedirect = originalCheckRedirect
+	if err != nil {
+		return nil, fmt.Errorf("validate ticket: %w", err)
+	}
+	body, _ := io.ReadAll(resp.Body)
+	resp.Body.Close()
+
+	slog.Info("qr-validate response", "status", resp.StatusCode, "redirects", len(redirectChain), "body", string(body[:minInt(len(body), 500)]))
+	slog.Info("qr-validate resp-headers", "set-cookie", resp.Header.Values("Set-Cookie"))
+
+	// Step 1: Check cookies from the entire request chain (redirects may have set pt_key)
+	ptKey, ptPin := extractPtKey(client.Jar)
+	if ptKey != "" {
+		slog.Info("qr-validate pt_key found from request chain", "redirects", len(redirectChain), "pt_key_len", len(ptKey))
+		return buildLoginResult(ptKey, ptPin)
+	}
+
+	// Step 2: Parse JSON response
+	var vResult struct {
+		ReturnCode int    `json:"returnCode"`
+		RiskCode   int    `json:"riskCode"`
+		URL        string `json:"url,omitempty"`
+	}
+	if err := json.Unmarshal(body, &vResult); err != nil {
+		// Not JSON — might be HTML from a redirect-based flow
+		slog.Warn("qr-validate response not JSON, dumping cookies", "body_preview", string(body[:minInt(len(body), 200)]))
+		dumpAllCookies(client.Jar)
+		return nil, fmt.Errorf("pt_key not found, response not JSON (status=%d)", resp.StatusCode)
+	}
+	if vResult.ReturnCode != 0 {
+		return nil, fmt.Errorf("ticket validation failed (code=%d)", vResult.ReturnCode)
+	}
+	if vResult.RiskCode != 0 {
+		slog.Warn("qr-validate risk control triggered", "riskCode", vResult.RiskCode, "url", vResult.URL)
+		return nil, &QRVerifyNeededError{
+			RiskCode:  vResult.RiskCode,
+			VerifyURL: vResult.URL,
+		}
+	}
+
+	// Step 3: Follow URL from JSON response
+	if vResult.URL != "" {
+		slog.Info("qr-validate following URL", "url", vResult.URL)
+		followURL := vResult.URL
+		if strings.HasPrefix(followURL, "http://") {
+			followURL = "https://" + followURL[7:]
+		}
+		rReq, _ := http.NewRequest("GET", followURL, nil)
+		rReq.Header.Set("User-Agent", jdUserAgent)
+		rReq.Header.Set("Referer", "https://passport.jd.com/new/login.aspx")
+		rReq.Header.Set("Accept", "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8")
+		rResp, err := client.Do(rReq)
+		if err != nil {
+			slog.Warn("qr-validate URL follow failed", "error", err)
+		} else {
+			slog.Info("qr-validate URL resp", "status", rResp.StatusCode, "set-cookie", rResp.Header.Values("Set-Cookie"))
+			rResp.Body.Close()
+		}
+		ptKey, ptPin = extractPtKey(client.Jar)
+	}
+
+	// Step 4: Final check
 	if ptKey == "" {
+		slog.Error("qr-validate pt_key not found after all attempts")
+		dumpAllCookies(client.Jar)
 		return nil, fmt.Errorf("pt_key cookie not found after validation")
 	}
+
+	return buildLoginResult(ptKey, ptPin)
+}
+
+func buildLoginResult(ptKey, ptPin string) (*QRLoginResult, error) {
+	slog.Info("qr-login cookies extracted", "pt_key_len", len(ptKey), "pt_pin_len", len(ptPin))
 
 	userInfo, err := fetchUserInfoWithPtKey(ptKey)
 	if err != nil {

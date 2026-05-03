@@ -30,10 +30,12 @@ func JWTMiddleware(getter SettingsGetter, next http.Handler) http.Handler {
 		}
 
 		whitelist := map[string]bool{
-			"/api/auth/status":         true,
-			"/api/auth/setup":          true,
-			"/api/auth/login":          true,
-			"/api/health":              true,
+			"/api/auth/status":     true,
+			"/api/auth/setup":      true,
+			"/api/auth/login":      true,
+			"/api/health":          true,
+			"/api/browser-login":   true,
+			"/api/oauth-callback":  true,
 		}
 		if whitelist[path] {
 			next.ServeHTTP(w, r)

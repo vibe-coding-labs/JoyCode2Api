@@ -86,6 +86,7 @@ const Dashboard: React.FC = () => {
   }));
 
   // Build hourly chart data — fill gaps with zeros
+  // Key format matches backend strftime('%m-%d %H') to avoid cross-day hour merging
   const hourlyMap = new Map<string, { count: number; tokens: number; errors: number }>();
   for (const h of stats.hourly ?? []) {
     hourlyMap.set(h.hour, { count: h.count, tokens: h.input_tokens + h.output_tokens, errors: h.errors });
@@ -94,11 +95,12 @@ const Dashboard: React.FC = () => {
   const hourlyChartData: { hour: string; label: string; requests: number; tokens: number; errors: number }[] = [];
   for (let i = 23; i >= 0; i--) {
     const d = new Date(now.getTime() - i * 3600000);
-    const h = String(d.getHours()).padStart(2, '0');
-    const entry = hourlyMap.get(h);
+    const key = `${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')} ${String(d.getHours()).padStart(2, '0')}`;
+    const label = `${String(d.getHours()).padStart(2, '0')}:00`;
+    const entry = hourlyMap.get(key);
     hourlyChartData.push({
-      hour: h,
-      label: `${h}:00`,
+      hour: key,
+      label,
       requests: entry?.count ?? 0,
       tokens: entry?.tokens ?? 0,
       errors: entry?.errors ?? 0,

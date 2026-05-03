@@ -35,6 +35,12 @@ const maskUserId = (id: string): string => {
   return id.slice(0, 2) + '***' + id.slice(-2);
 };
 
+const fmtTokens = (n: number): string => {
+  if (n >= 1_000_000) return (n / 1_000_000).toFixed(1) + 'M';
+  if (n >= 1_000) return (n / 1_000).toFixed(1) + 'K';
+  return String(n);
+};
+
 const claudeCodeCmd = (apiKey: string, model = 'GLM-5.1') => [
   `API_TIMEOUT_MS=6000000 \\`,
   `CLAUDE_CODE_MAX_RETRIES=1000000 \\`,
@@ -228,6 +234,30 @@ const Accounts: React.FC = () => {
         <Tag color="blue">{val} 个活跃</Tag>
       ) : (
         <Typography.Text type="secondary">无</Typography.Text>
+      ),
+    },
+    {
+      title: '今日请求',
+      dataIndex: 'today_requests',
+      key: 'today_requests',
+      render: (val: number, record: Account) => (
+        <div style={{ lineHeight: 1.4 }}>
+          <Typography.Text strong style={{ fontSize: 13 }}>{val}</Typography.Text>
+          <br />
+          <Typography.Text type="secondary" style={{ fontSize: 11 }}>累计 {record.total_requests}</Typography.Text>
+        </div>
+      ),
+    },
+    {
+      title: '今日 Token',
+      dataIndex: 'today_tokens',
+      key: 'today_tokens',
+      render: (val: number, record: Account) => (
+        <div style={{ lineHeight: 1.4 }}>
+          <Typography.Text strong style={{ fontSize: 13 }}>{fmtTokens(val)}</Typography.Text>
+          <br />
+          <Typography.Text type="secondary" style={{ fontSize: 11 }}>累计 {fmtTokens(record.total_tokens)}</Typography.Text>
+        </div>
       ),
     },
     {

@@ -467,6 +467,7 @@ func (h *Handler) listAccounts(w http.ResponseWriter, r *http.Request) {
 	for i := range accounts {
 		accounts[i].ActiveSessions = proxy.GetActiveSessions(accounts[i].APIKey)
 	}
+	h.store.FillAccountStats(accounts)
 	writeJSON(w, http.StatusOK, map[string]interface{}{"accounts": accounts})
 }
 

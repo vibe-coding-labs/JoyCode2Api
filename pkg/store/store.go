@@ -35,13 +35,17 @@ type Account struct {
 }
 
 type AccountInfo struct {
-	APIKey        string `json:"api_key"`
-	APIToken      string `json:"api_token"`
-	UserID        string `json:"user_id"`
-	IsDefault     bool   `json:"is_default"`
-	DefaultModel  string `json:"default_model"`
-	CreatedAt     string `json:"created_at,omitempty"`
-	ActiveSessions int64 `json:"active_sessions"`
+	APIKey          string `json:"api_key"`
+	APIToken        string `json:"api_token"`
+	UserID          string `json:"user_id"`
+	IsDefault       bool   `json:"is_default"`
+	DefaultModel    string `json:"default_model"`
+	CreatedAt       string `json:"created_at,omitempty"`
+	ActiveSessions  int64  `json:"active_sessions"`
+	TotalRequests   int    `json:"total_requests"`
+	TodayRequests   int    `json:"today_requests"`
+	TotalTokens     int    `json:"total_tokens"`
+	TodayTokens     int    `json:"today_tokens"`
 }
 
 type Stats struct {
@@ -397,6 +401,65 @@ func (s *Store) ListAccounts() ([]AccountInfo, error) {
 		accounts = append(accounts, a)
 	}
 	return accounts, rows.Err()
+}
+
+// FillAccountStats populates request/token statistics for each account using batch queries.
+func (s *Store) FillAccountStats(accounts []AccountInfo) {
+	if len(accounts) == 0 {
+		return
+	}
+
+	// All-time stats: single GROUP BY query
+	allRows, err := s.db.Query(`
+		SELECT api_key,
+			COUNT(*) as req_count,
+			COALESCE(SUM(input_tokens + output_tokens), 0) as token_sum
+		FROM request_logs
+		GROUP BY api_key`)
+	if err != nil {
+		return
+	}
+	allMap := make(map[string][2]int)
+	for allRows.Next() {
+		var key string
+		var reqCount, tokenSum int
+		if allRows.Scan(&key, &reqCount, &tokenSum) == nil {
+			allMap[key] = [2]int{reqCount, tokenSum}
+		}
+	}
+	allRows.Close()
+
+	// Today stats: single GROUP BY query
+	todayRows, err := s.db.Query(`
+		SELECT api_key,
+			COUNT(*) as req_count,
+			COALESCE(SUM(input_tokens + output_tokens), 0) as token_sum
+		FROM request_logs
+		WHERE date(created_at) = date('now', 'localtime')
+		GROUP BY api_key`)
+	if err != nil {
+		return
+	}
+	todayMap := make(map[string][2]int)
+	for todayRows.Next() {
+		var key string
+		var reqCount, tokenSum int
+		if todayRows.Scan(&key, &reqCount, &tokenSum) == nil {
+			todayMap[key] = [2]int{reqCount, tokenSum}
+		}
+	}
+	todayRows.Close()
+
+	for i := range accounts {
+		if v, ok := allMap[accounts[i].APIKey]; ok {
+			accounts[i].TotalRequests = v[0]
+			accounts[i].TotalTokens = v[1]
+		}
+		if v, ok := todayMap[accounts[i].APIKey]; ok {
+			accounts[i].TodayRequests = v[0]
+			accounts[i].TodayTokens = v[1]
+		}
+	}
 }
 
 func (s *Store) GetAccount(apiKey string) (*Account, error) {

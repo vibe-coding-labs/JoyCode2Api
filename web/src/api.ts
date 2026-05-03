@@ -6,6 +6,10 @@ export interface Account {
   default_model: string;
   created_at?: string;
   active_sessions: number;
+  total_requests: number;
+  today_requests: number;
+  total_tokens: number;
+  today_tokens: number;
 }
 
 export interface ModelInfo {

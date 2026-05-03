@@ -755,7 +755,7 @@ func (s *Store) LogRequest(apiKey, model, endpoint string, stream bool, statusCo
 
 func (s *Store) GetStats() (*Stats, error) {
 	stats := &Stats{}
-	tf := "created_at >= datetime('now', 'localtime', '-24 hours')"
+	tf := "created_at >= datetime('now', '-24 hours')"
 
 	err := s.db.QueryRow("SELECT COUNT(*) FROM request_logs WHERE "+tf).Scan(&stats.TotalRequests)
 	if err != nil {
@@ -833,7 +833,7 @@ func (s *Store) GetHourlyStats() ([]HourlyData, error) {
 			COALESCE(SUM(output_tokens), 0),
 			SUM(CASE WHEN status_code >= 400 THEN 1 ELSE 0 END)
 		FROM request_logs
-		WHERE created_at >= datetime('now', 'localtime', '-24 hours')
+		WHERE created_at >= datetime('now', '-24 hours')
 		GROUP BY hour ORDER BY hour`)
 	if err != nil {
 		return nil, err
@@ -853,7 +853,7 @@ func (s *Store) GetHourlyStats() ([]HourlyData, error) {
 
 func (s *Store) GetAccountStats(apiKey string) (*AccountStats, error) {
 	as := &AccountStats{APIKey: apiKey}
-	tf := "created_at >= datetime('now', 'localtime', '-24 hours')"
+	tf := "created_at >= datetime('now', '-24 hours')"
 
 	s.db.QueryRow("SELECT COUNT(*) FROM request_logs WHERE api_key = ? AND "+tf, apiKey).Scan(&as.TotalRequests)
 	s.db.QueryRow("SELECT COALESCE(AVG(latency_ms), 0) FROM request_logs WHERE api_key = ? AND "+tf, apiKey).Scan(&as.AvgLatencyMs)
@@ -1011,7 +1011,7 @@ func (s *Store) CleanupOldLogs(days int) (int64, error) {
 		return 0, nil
 	}
 	result, err := s.db.Exec(
-		"DELETE FROM request_logs WHERE created_at < datetime('now', 'localtime', '-' || ? || ' days')",
+		"DELETE FROM request_logs WHERE created_at < datetime('now', '-' || ? || ' days')",
 		days,
 	)
 	if err != nil {

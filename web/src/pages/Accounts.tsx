@@ -7,6 +7,7 @@ import {
   PlusOutlined, DeleteOutlined, StarOutlined,
   SafetyCertificateOutlined, ReloadOutlined,
   QuestionCircleOutlined, ClearOutlined, EditOutlined,
+  CheckCircleOutlined, CloseCircleOutlined, ClockCircleOutlined,
 } from '@ant-design/icons';
 import SvgClaudeCode from '../components/ClaudeCodeIcon';
 import SvgCodex from '../components/CodexIcon';
@@ -241,22 +242,27 @@ const Accounts: React.FC = () => {
       ),
     },
     {
-      title: '凭证',
+      title: '凭证状态',
       key: 'credential_status',
       render: (_: unknown, record: Account) => {
-        if (!record.credential_checked_at) {
-          return <Tag>等待检测</Tag>;
-        }
-        if (record.credential_valid) {
+        const cv = record.credential_valid;
+        if (cv === 1) {
           return (
-            <Tooltip title={`上次检测：${record.credential_checked_at}`}>
-              <Tag color="green">有效</Tag>
+            <Tooltip title={`上次刷新：${record.credential_refreshed_at || record.credential_checked_at || '未知'}`}>
+              <Tag color="success" icon={<CheckCircleOutlined />}>有效</Tag>
+            </Tooltip>
+          );
+        }
+        if (cv === 0) {
+          return (
+            <Tooltip title={record.credential_error || '凭证已过期，请使用 OAuth 授权登录重新获取'}>
+              <Tag color="error" icon={<CloseCircleOutlined />}>已过期</Tag>
             </Tooltip>
           );
         }
         return (
-          <Tooltip title={record.credential_error || '凭证已过期，请重新登录'}>
-            <Tag color="red">已过期</Tag>
+          <Tooltip title="keepalive 将在启动后 10 分钟内完成首次检测">
+            <Tag color="processing" icon={<ClockCircleOutlined />}>首次检测中</Tag>
           </Tooltip>
         );
       },

@@ -46,8 +46,9 @@ type AccountInfo struct {
 	TodayRequests   int    `json:"today_requests"`
 	TotalTokens         int    `json:"total_tokens"`
 	TodayTokens         int    `json:"today_tokens"`
-	CredentialValid     bool   `json:"credential_valid,omitempty"`
+	CredentialValid      int    `json:"credential_valid"`               // -1=unknown, 0=expired, 1=valid
 	CredentialCheckedAt string `json:"credential_checked_at,omitempty"`
+	CredentialRefreshAt string `json:"credential_refreshed_at,omitempty"`
 	CredentialError     string `json:"credential_error,omitempty"`
 }
 
@@ -391,7 +392,7 @@ func (s *Store) AddAccount(apiKey, ptKey, userID string, isDefault bool, default
 }
 
 func (s *Store) ListAccounts() ([]AccountInfo, error) {
-	rows, err := s.db.Query("SELECT api_key, api_token, user_id, is_default, default_model, created_at FROM accounts ORDER BY created_at")
+	rows, err := s.db.Query("SELECT api_key, api_token, user_id, is_default, default_model, created_at, credential_valid, credential_refreshed_at FROM accounts ORDER BY created_at")
 	if err != nil {
 		slog.Error("store: list accounts query failed", "error", err)
 		return nil, err
@@ -402,11 +403,12 @@ func (s *Store) ListAccounts() ([]AccountInfo, error) {
 	for rows.Next() {
 		var a AccountInfo
 		var isDef int
-		if err := rows.Scan(&a.APIKey, &a.APIToken, &a.UserID, &isDef, &a.DefaultModel, &a.CreatedAt); err != nil {
+		if err := rows.Scan(&a.APIKey, &a.APIToken, &a.UserID, &isDef, &a.DefaultModel, &a.CreatedAt, &a.CredentialValid, &a.CredentialRefreshAt); err != nil {
 			slog.Error("store: list accounts scan failed", "error", err)
 			return nil, err
 		}
 		a.IsDefault = isDef == 1
+		a.CredentialCheckedAt = a.CredentialRefreshAt
 		accounts = append(accounts, a)
 	}
 	return accounts, rows.Err()

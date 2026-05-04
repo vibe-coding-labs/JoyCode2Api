@@ -10,8 +10,9 @@ export interface Account {
   today_requests: number;
   total_tokens: number;
   today_tokens: number;
-  credential_valid?: boolean;
+  credential_valid: number; // -1=unknown, 0=expired, 1=valid
   credential_checked_at?: string;
+  credential_refreshed_at?: string;
   credential_error?: string;
 }
 

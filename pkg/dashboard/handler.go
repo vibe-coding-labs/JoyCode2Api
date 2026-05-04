@@ -475,7 +475,7 @@ func (h *Handler) listAccounts(w http.ResponseWriter, r *http.Request) {
 		statuses := h.keeper.GetAllStatuses()
 		for i := range accounts {
 			if s, ok := statuses[accounts[i].APIKey]; ok {
-				accounts[i].CredentialValid = s.Valid
+				if s.Valid { accounts[i].CredentialValid = 1 } else { accounts[i].CredentialValid = 0 }
 				accounts[i].CredentialCheckedAt = s.LastChecked.Format("2006-01-02 15:04:05")
 				accounts[i].CredentialError = s.ErrorMessage
 			}

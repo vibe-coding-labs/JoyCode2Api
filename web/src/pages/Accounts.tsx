@@ -13,7 +13,7 @@ import SvgCodex from '../components/CodexIcon';
 import CommandTooltip from '../components/CommandTooltip';
 import QRLoginModal from '../components/QRLoginModal';
 import { useNavigate } from 'react-router-dom';
-import { api, setToken } from '../api';
+import { api } from '../api';
 import type { Account } from '../api';
 
 const BUILTIN_MODELS = [
@@ -94,27 +94,7 @@ const Accounts: React.FC = () => {
 
   useEffect(() => { fetchAccounts(); }, []);
 
-  useEffect(() => {
-    const params = new URLSearchParams(window.location.search);
-    const loginSuccess = params.get('login_success');
-    const loginError = params.get('login_error');
-    if (loginSuccess) {
-      // Read auto-issued JWT from cookie set by OAuth callback
-      const jwtCookie = document.cookie.split('; ').find(c => c.startsWith('joycode_auto_jwt='));
-      if (jwtCookie) {
-        const token = jwtCookie.split('=')[1];
-        if (token) setToken(token);
-        document.cookie = 'joycode_auto_jwt=; path=/; max-age=0';
-      }
-      message.success(`登录成功！账号「${loginSuccess}」已添加`);
-      fetchAccounts();
-      window.history.replaceState({}, '', window.location.pathname);
-    }
-    if (loginError) {
-      message.error(`登录失败：${loginError}`);
-      window.history.replaceState({}, '', window.location.pathname);
-    }
-  }, []);
+
 
   const handleAdd = async (values: { api_key: string; pt_key: string; user_id: string; is_default?: boolean; default_model?: string }) => {
     try {
@@ -377,7 +357,7 @@ const Accounts: React.FC = () => {
               try {
                 const result = await api.browserLogin();
                 window.open(result.url, '_blank');
-                message.info('请在浏览器中完成登录，登录成功后会自动同步到此处');
+                message.info('请在打开的页面中完成 OAuth 授权，授权成功后会自动同步到此处');
                 setTimeout(() => fetchAccounts(), 10000);
               } catch (e: unknown) {
                 message.error(e instanceof Error ? e.message : '获取登录链接失败');
@@ -385,7 +365,7 @@ const Accounts: React.FC = () => {
             }}
             icon={<SafetyCertificateOutlined />}
           >
-            浏览器登录
+            OAuth授权登录
           </Button>
           <Button
             type="primary"
@@ -434,7 +414,7 @@ const Accounts: React.FC = () => {
           onClick: () => navigate(`/accounts/${encodeURIComponent(record.api_key)}`),
           style: { cursor: 'pointer' },
         })}
-        locale={{ emptyText: '暂无账号，请点击「一键导入」或「浏览器登录」按钮配置您的第一个 JoyCode 账号' }}
+        locale={{ emptyText: '暂无账号，请点击「一键导入」或「OAuth授权登录」按钮配置您的第一个 JoyCode 账号' }}
       />
 
       <Modal

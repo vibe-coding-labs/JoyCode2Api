@@ -82,9 +82,9 @@ var serveCmd = &cobra.Command{
 		srv := openai.NewServer(client, s)
 		anth := anthropic.NewHandler(client, s)
 
-		// Start credential keepalive
-		keeper := keepalive.NewKeeper(s)
-		keeper.Start(10 * time.Hour)
+		// Start credential keepalive: check every 10min, refresh accounts older than 1h
+		keeper := keepalive.NewKeeper(s, 1*time.Hour)
+		keeper.Start(10 * time.Minute)
 
 		// Per-request client resolution from database accounts
 		if s != nil {

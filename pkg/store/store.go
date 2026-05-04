@@ -253,6 +253,12 @@ func (s *Store) migrate() error {
 		s.db.Exec("UPDATE accounts SET api_token = ? WHERE api_key = ?", token, key)
 	}
 
+	// Migration: add credential_refreshed_at column to accounts
+	s.db.Exec("ALTER TABLE accounts ADD COLUMN credential_refreshed_at TEXT DEFAULT ''")
+
+	// Migration: add credential_valid column to accounts (1=valid, 0=expired, -1=unknown)
+	s.db.Exec("ALTER TABLE accounts ADD COLUMN credential_valid INTEGER DEFAULT -1")
+
 	// Migration: fix historical UTC timestamps to localtime
 	s.migrateUTCTimestamps()
 
@@ -576,14 +582,79 @@ func (s *Store) UpdatePtKey(apiKey, ptKey string) error {
 		slog.Error("store: encrypt pt_key for update failed", "api_key", apiKey, "error", err)
 		return fmt.Errorf("encrypt pt_key: %w", err)
 	}
-	_, err = s.db.Exec(
-		"UPDATE accounts SET pt_key = ?, updated_at = datetime('now', 'localtime') WHERE api_key = ?",
+	result, err := s.db.Exec(
+		"UPDATE accounts SET pt_key = ?, updated_at = datetime('now', 'localtime'), credential_refreshed_at = datetime('now', 'localtime') WHERE api_key = ?",
 		encPtKey, apiKey,
 	)
 	if err != nil {
 		slog.Error("store: update pt_key failed", "api_key", apiKey, "error", err)
+		return err
 	}
-	return err
+	rows, _ := result.RowsAffected()
+	slog.Info("store: pt_key updated",
+		"api_key", apiKey,
+		"rows_affected", rows,
+	)
+	return nil
+}
+
+// UpdateCredentialRefreshedAt sets credential_refreshed_at to now for an account
+// that was validated but did not need a pt_key refresh.
+func (s *Store) UpdateCredentialRefreshedAt(apiKey string) {
+	s.db.Exec(
+		"UPDATE accounts SET credential_refreshed_at = datetime('now', 'localtime') WHERE api_key = ?",
+		apiKey,
+	)
+}
+
+// SetCredentialValid updates the credential_valid status for an account.
+func (s *Store) SetCredentialValid(apiKey string, valid bool) {
+	v := 0
+	if valid {
+		v = 1
+	}
+	s.db.Exec("UPDATE accounts SET credential_valid = ? WHERE api_key = ?", v, apiKey)
+}
+
+// ListStaleAccounts returns accounts that need credential checking.
+// Valid accounts (credential_valid=1) use the normal threshold.
+// Failed accounts (credential_valid=0) use a 4x longer backoff threshold.
+// Unknown accounts (credential_valid=-1) or never-refreshed are always included.
+func (s *Store) ListStaleAccounts(threshold time.Duration) ([]Account, error) {
+	normalCutoff := time.Now().Add(-threshold).Format("2006-01-02 15:04:05")
+	backoffCutoff := time.Now().Add(-threshold * 4).Format("2006-01-02 15:04:05")
+	rows, err := s.db.Query(
+		`SELECT api_key, pt_key, user_id, default_model FROM accounts
+		 WHERE credential_refreshed_at = ''
+		    OR credential_valid = -1
+		    OR (credential_valid = 1 AND credential_refreshed_at < ?)
+		    OR (credential_valid = 0 AND credential_refreshed_at < ?)
+		 ORDER BY created_at`,
+		normalCutoff, backoffCutoff,
+	)
+	if err != nil {
+		slog.Error("store: list stale accounts query failed", "error", err)
+		return nil, err
+	}
+	defer rows.Close()
+
+	var accounts []Account
+	for rows.Next() {
+		var a Account
+		var encPtKey string
+		if err := rows.Scan(&a.APIKey, &encPtKey, &a.UserID, &a.DefaultModel); err != nil {
+			slog.Error("store: list stale accounts scan failed", "error", err)
+			return nil, err
+		}
+		ptKey, err := s.decrypt(encPtKey)
+		if err != nil {
+			slog.Error("store: decrypt pt_key failed for stale account", "api_key", a.APIKey, "error", err)
+			continue
+		}
+		a.PtKey = ptKey
+		accounts = append(accounts, a)
+	}
+	return accounts, nil
 }
 
 // ListAllAccountsWithCredentials returns all accounts with decrypted pt_keys.

@@ -53,18 +53,25 @@ func resolveClient() (*joycode.Client, error) {
 	} else {
 		detected, err := auth.LoadFromSystem()
 		if err != nil {
-			return nil, fmt.Errorf("cannot auto-detect credentials: %w\n  Please provide --ptkey and --userid flags, or log in to JoyCode first", err)
-		}
-		creds = detected
-		source = "auto-detected"
+			if !skipValidation {
+				return nil, fmt.Errorf("cannot auto-detect credentials: %w\n  Please provide --ptkey and --userid flags, or log in to JoyCode first", err)
+			}
+			// With --skip-validation, create a placeholder client; real requests use DB accounts via resolver
+			log.Printf("Warning: cannot auto-detect credentials (%v); using placeholder (requests will use DB accounts)", err)
+			creds = &auth.Credentials{PtKey: "placeholder", UserID: "placeholder"}
+			source = "placeholder (no local JoyCode session)"
+		} else {
+			creds = detected
+			source = "auto-detected"
 
-		if ptKey != "" {
-			creds.PtKey = ptKey
-			source = "flags+auto-detected"
-		}
-		if userID != "" {
-			creds.UserID = userID
-			source = "flags+auto-detected"
+			if ptKey != "" {
+				creds.PtKey = ptKey
+				source = "flags+auto-detected"
+			}
+			if userID != "" {
+				creds.UserID = userID
+				source = "flags+auto-detected"
+			}
 		}
 	}
 

@@ -28,11 +28,7 @@ const BUILTIN_MODELS = [
   { label: 'Doubao-Seed-2.0-pro', value: 'Doubao-Seed-2.0-pro' },
 ];
 
-const getBaseURL = () => {
-  const host = window.location.hostname;
-  const port = parseInt(window.location.port || '443', 10);
-  return `http://${host}:${port + 1}`;
-};
+const getBaseURL = () => `http://${window.location.host}`;
 
 const maskUserId = (id: string): string => {
   if (!id) return '-';

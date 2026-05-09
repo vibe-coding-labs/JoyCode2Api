@@ -70,11 +70,7 @@ const formatLatency = (ms: number) => {
   return `${m}m${remainS > 0 ? ` ${remainS}s` : ''}`;
 };
 
-const getBaseURL = () => {
-  const host = window.location.hostname;
-  const port = parseInt(window.location.port || '443', 10);
-  return `http://${host}:${port + 1}`;
-};
+const getBaseURL = () => `http://${window.location.host}`;
 
 const buildClaudeCodeCmd = (apiKey: string, model = 'GLM-5.1') => [
   `API_TIMEOUT_MS=6000000 \\`,

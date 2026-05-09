@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"context"
+	"crypto/tls"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -194,19 +195,19 @@ var serveCmd = &cobra.Command{
 			Handler: handler,
 		}
 
+		var tlsCfg *tls.Config
 		scheme := "http"
 		if serveTLS {
-			tlsCfg, err := ensureTLS()
+			var err error
+			tlsCfg, err = ensureTLS()
 			if err != nil {
 				log.Printf("Warning: TLS setup failed (%v), falling back to HTTP", err)
 			} else {
-				httpSrv.TLSConfig = tlsCfg
 				scheme = "https"
 			}
 		}
 
 		go func() {
-			log.Printf("JoyCode Proxy running on %s://%s", scheme, addr)
 			fmt.Println()
 			fmt.Printf("  JoyCode Proxy %s\n", Version)
 			fmt.Println("  ─────────────────────────────────────────────────")
@@ -220,7 +221,11 @@ var serveCmd = &cobra.Command{
 			fmt.Println("    GET  /health               — Health check")
 			fmt.Println()
 			fmt.Println("  Dashboard:")
-			fmt.Printf("    %s://%s — Web UI\n", scheme, addr)
+			if tlsCfg != nil {
+				fmt.Printf("    https://%s — Web UI (also accepts HTTP)\n", addr)
+			} else {
+				fmt.Printf("    http://%s — Web UI\n", addr)
+			}
 			fmt.Println()
 			fmt.Println("  Claude Code setup:")
 			fmt.Printf("    export ANTHROPIC_BASE_URL=http://%s\n", addr)
@@ -230,37 +235,20 @@ var serveCmd = &cobra.Command{
 				fmt.Println("  Verbose logging: enabled")
 			}
 			fmt.Println()
-			var listenErr error
-			if httpSrv.TLSConfig != nil {
-				// Start HTTP server on port+1: API pass-through, browser â HTTPS redirect
-				httpAddr := fmt.Sprintf("%s:%d", serveHost, servePort+1)
-				redirectHandler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-					// API and health endpoints: pass through directly
-					if strings.HasPrefix(r.URL.Path, "/v1/") || r.URL.Path == "/health" {
-						handler.ServeHTTP(w, r)
-						return
-					}
-					// Browser requests: redirect to HTTPS (use main port, not redirect port)
-					host := r.Host
-					if h, _, err := net.SplitHostPort(host); err == nil {
-						host = net.JoinHostPort(h, fmt.Sprintf("%d", servePort))
-					}
-					target := fmt.Sprintf("https://%s%s", host, r.URL.RequestURI())
-					http.Redirect(w, r, target, http.StatusMovedPermanently)
-				})
-				httpRedirectSrv := &http.Server{
-					Addr:    httpAddr,
-					Handler: redirectHandler,
-				}
-				go func() {
-					log.Printf("HTTP server on %s (API pass-through, browser â HTTPS)", httpAddr)
-					if err := httpRedirectSrv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
-						log.Printf("HTTP server error: %v", err)
-					}
-				}()
 
-				listenErr = httpSrv.ListenAndServeTLS("", "")
+			var listenErr error
+			if tlsCfg != nil {
+				// Single-port dual-protocol: peek first byte to auto-detect TLS vs HTTP
+				httpSrv.TLSConfig = tlsCfg
+				ln, err := net.Listen("tcp", addr)
+				if err != nil {
+					log.Fatalf("Listen error: %v", err)
+				}
+				dualLn := newDualListener(ln, tlsCfg, handler)
+				log.Printf("JoyCode Proxy running on %s://%s (also accepts HTTP)", scheme, addr)
+				listenErr = httpSrv.Serve(dualLn)
 			} else {
+				log.Printf("JoyCode Proxy running on %s://%s", scheme, addr)
 				listenErr = httpSrv.ListenAndServe()
 			}
 			if listenErr != nil && listenErr != http.ErrServerClosed {

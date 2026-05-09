@@ -28,7 +28,11 @@ const BUILTIN_MODELS = [
   { label: 'Doubao-Seed-2.0-pro', value: 'Doubao-Seed-2.0-pro' },
 ];
 
-const getBaseURL = () => `http://${window.location.host}`;
+const getBaseURL = () => {
+  const host = window.location.hostname;
+  const port = parseInt(window.location.port || '443', 10);
+  return `http://${host}:${port + 1}`;
+};
 
 const maskUserId = (id: string): string => {
   if (!id) return '-';
@@ -61,7 +65,17 @@ const codexCmd = (apiKey: string, model = 'GLM-5.1') => [
 
 const copyToClipboard = async (text: string, label: string) => {
   try {
-    await navigator.clipboard.writeText(text);
+    if (navigator.clipboard?.writeText) {
+      await navigator.clipboard.writeText(text);
+    } else {
+      const ta = document.createElement('textarea');
+      ta.value = text;
+      ta.style.cssText = 'position:fixed;left:-9999px';
+      document.body.appendChild(ta);
+      ta.select();
+      document.execCommand('copy');
+      document.body.removeChild(ta);
+    }
     message.success(`${label} 命令已复制`);
   } catch {
     message.error('复制失败');

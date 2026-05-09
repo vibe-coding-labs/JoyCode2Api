@@ -9,6 +9,7 @@ import (
 	"io/fs"
 	"log"
 	"log/slog"
+	"net"
 	"net/http"
 	"os"
 	"os/signal"
@@ -31,6 +32,7 @@ import (
 var (
 	serveHost       string
 	servePort       int
+	serveTLS        bool
 	requestCounter uint64
 )
 
@@ -75,8 +77,10 @@ var serveCmd = &cobra.Command{
 				}
 			}
 		}
-		if n, err := s.MigrateTokenLogs(); err == nil && n > 0 {
-			log.Printf("Migrated %d token-based request logs to account api_keys", n)
+		if s != nil {
+			if n, err := s.MigrateTokenLogs(); err == nil && n > 0 {
+				log.Printf("Migrated %d token-based request logs to account api_keys", n)
+			}
 		}
 
 		srv := openai.NewServer(client, s)
@@ -190,8 +194,19 @@ var serveCmd = &cobra.Command{
 			Handler: handler,
 		}
 
+		scheme := "http"
+		if serveTLS {
+			tlsCfg, err := ensureTLS()
+			if err != nil {
+				log.Printf("Warning: TLS setup failed (%v), falling back to HTTP", err)
+			} else {
+				httpSrv.TLSConfig = tlsCfg
+				scheme = "https"
+			}
+		}
+
 		go func() {
-			log.Printf("JoyCode Proxy running on http://%s", addr)
+			log.Printf("JoyCode Proxy running on %s://%s", scheme, addr)
 			fmt.Println()
 			fmt.Printf("  JoyCode Proxy %s\n", Version)
 			fmt.Println("  ─────────────────────────────────────────────────")
@@ -205,7 +220,7 @@ var serveCmd = &cobra.Command{
 			fmt.Println("    GET  /health               — Health check")
 			fmt.Println()
 			fmt.Println("  Dashboard:")
-			fmt.Printf("    http://%s — Web UI\n", addr)
+			fmt.Printf("    %s://%s — Web UI\n", scheme, addr)
 			fmt.Println()
 			fmt.Println("  Claude Code setup:")
 			fmt.Printf("    export ANTHROPIC_BASE_URL=http://%s\n", addr)
@@ -215,8 +230,41 @@ var serveCmd = &cobra.Command{
 				fmt.Println("  Verbose logging: enabled")
 			}
 			fmt.Println()
-			if err := httpSrv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
-				log.Fatalf("Server error: %v", err)
+			var listenErr error
+			if httpSrv.TLSConfig != nil {
+				// Start HTTP server on port+1: API pass-through, browser â HTTPS redirect
+				httpAddr := fmt.Sprintf("%s:%d", serveHost, servePort+1)
+				redirectHandler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+					// API and health endpoints: pass through directly
+					if strings.HasPrefix(r.URL.Path, "/v1/") || r.URL.Path == "/health" {
+						handler.ServeHTTP(w, r)
+						return
+					}
+					// Browser requests: redirect to HTTPS (use main port, not redirect port)
+					host := r.Host
+					if h, _, err := net.SplitHostPort(host); err == nil {
+						host = net.JoinHostPort(h, fmt.Sprintf("%d", servePort))
+					}
+					target := fmt.Sprintf("https://%s%s", host, r.URL.RequestURI())
+					http.Redirect(w, r, target, http.StatusMovedPermanently)
+				})
+				httpRedirectSrv := &http.Server{
+					Addr:    httpAddr,
+					Handler: redirectHandler,
+				}
+				go func() {
+					log.Printf("HTTP server on %s (API pass-through, browser â HTTPS)", httpAddr)
+					if err := httpRedirectSrv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+						log.Printf("HTTP server error: %v", err)
+					}
+				}()
+
+				listenErr = httpSrv.ListenAndServeTLS("", "")
+			} else {
+				listenErr = httpSrv.ListenAndServe()
+			}
+			if listenErr != nil && listenErr != http.ErrServerClosed {
+				log.Fatalf("Server error: %v", listenErr)
 			}
 		}()
 
@@ -242,6 +290,7 @@ var serveCmd = &cobra.Command{
 func init() {
 	serveCmd.Flags().StringVarP(&serveHost, "host", "H", "0.0.0.0", "绑定地址")
 	serveCmd.Flags().IntVarP(&servePort, "port", "p", 34891, "绑定端口")
+	serveCmd.Flags().BoolVar(&serveTLS, "tls", true, "启用 HTTPS（自签名证书）")
 	rootCmd.AddCommand(serveCmd)
 }
 
@@ -328,7 +377,7 @@ func requestLogMiddleware(next http.Handler, s *store.Store) http.Handler {
 		if strings.HasPrefix(path, "/v1/") {
 			apiKey := r.Header.Get("x-api-key")
 			if apiKey == "" {
-				apiKey = r.Header.Get("Authorization")
+				apiKey := r.Header.Get("Authorization")
 				if strings.HasPrefix(apiKey, "Bearer ") {
 					apiKey = strings.TrimPrefix(apiKey, "Bearer ")
 				}

@@ -3,7 +3,6 @@ package main
 import (
 	"bufio"
 	"crypto/tls"
-	"fmt"
 	"net"
 	"net/http"
 )
@@ -34,29 +33,24 @@ func (dl *dualListener) Accept() (net.Conn, error) {
 		}
 
 		if b[0] == 0x16 {
-			// TLS ClientHello — wrap and return for http.Server
+			// TLS ClientHello — wrap and return for the main http.Server
 			tlsConn := tls.Server(&bufConn{Conn: conn, Reader: br}, dl.tlsCfg)
 			return tlsConn, nil
 		}
 
-		// Plain HTTP — read request and serve via handler directly
-		go func(rawConn net.Conn, reader *bufio.Reader) {
-			defer rawConn.Close()
-			for {
-				req, err := http.ReadRequest(reader)
-				if err != nil {
-					return
-				}
-				req.RemoteAddr = rawConn.RemoteAddr().String()
-				resp := &httpResponse{header: make(http.Header)}
-				dl.handler.ServeHTTP(resp, req)
-				resp.writeTo(rawConn)
-				if resp.shouldClose() {
-					return
-				}
-				reader.Reset(rawConn)
-			}
-		}(conn, br)
+		// Plain HTTP — serve via a dedicated http.Server for proper streaming support
+		bc := &bufConn{Conn: conn, Reader: br}
+		cl := &chanListener{
+			ch:   make(chan net.Conn, 1),
+			addr: conn.LocalAddr(),
+		}
+		cl.ch <- bc // deliver the connection
+
+		go func() {
+			srv := &http.Server{Handler: dl.handler}
+			srv.Serve(cl) // serves the one conn, then Accept returns ErrServerClosed
+			conn.Close()
+		}()
 	}
 }
 
@@ -69,50 +63,23 @@ func (bc *bufConn) Read(b []byte) (int, error) {
 	return bc.Reader.Read(b)
 }
 
-// httpResponse collects the handler's response without using http.ResponseWriter directly.
-type httpResponse struct {
-	statusCode int
-	header     http.Header
-	body       []byte
+// chanListener delivers connections via a channel.
+type chanListener struct {
+	ch   chan net.Conn
+	addr net.Addr
 }
 
-func (r *httpResponse) Header() http.Header {
-	return r.header
-}
-
-func (r *httpResponse) Write(data []byte) (int, error) {
-	r.body = append(r.body, data...)
-	return len(data), nil
-}
-
-func (r *httpResponse) WriteHeader(code int) {
-	r.statusCode = code
-}
-
-func (r *httpResponse) writeTo(conn net.Conn) {
-	if r.statusCode == 0 {
-		r.statusCode = 200
+func (l *chanListener) Accept() (net.Conn, error) {
+	conn, ok := <-l.ch
+	if !ok {
+		return nil, http.ErrServerClosed
 	}
-	text := http.StatusText(r.statusCode)
-	if text == "" {
-		text = "Unknown"
-	}
-	conn.Write([]byte(fmt.Sprintf("HTTP/1.1 %d %s\r\n", r.statusCode, text)))
-	for k, vs := range r.header {
-		for _, v := range vs {
-			conn.Write([]byte(fmt.Sprintf("%s: %s\r\n", k, v)))
-		}
-	}
-	conn.Write([]byte(fmt.Sprintf("Content-Length: %d\r\n", len(r.body))))
-	conn.Write([]byte("\r\n"))
-	conn.Write(r.body)
+	return conn, nil
 }
 
-func (r *httpResponse) shouldClose() bool {
-	for _, v := range r.header["Connection"] {
-		if v == "close" {
-			return true
-		}
-	}
-	return false
+func (l *chanListener) Close() error {
+	close(l.ch)
+	return nil
 }
+
+func (l *chanListener) Addr() net.Addr { return l.addr }

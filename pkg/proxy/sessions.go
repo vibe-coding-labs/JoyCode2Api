@@ -12,7 +12,7 @@ type sessionEntry struct {
 	lastSeen time.Time
 }
 
-// per-account session store: apiKey → sessionID → entry
+// per-account session store: userID → sessionID → entry
 var (
 	sessionMu   sync.Mutex
 	sessions     = make(map[string]map[string]*sessionEntry)
@@ -29,16 +29,16 @@ func init() {
 
 // RecordSession records that a session was active for the given apiKey.
 // sessionId should be a unique identifier extracted from the request (e.g. metadata.session_id).
-func RecordSession(apiKey, sessionID string) {
-	if apiKey == "" || sessionID == "" {
+func RecordSession(userID, sessionID string) {
+	if userID == "" || sessionID == "" {
 		return
 	}
 	sessionMu.Lock()
 	defer sessionMu.Unlock()
-	m, ok := sessions[apiKey]
+	m, ok := sessions[userID]
 	if !ok {
 		m = make(map[string]*sessionEntry)
-		sessions[apiKey] = m
+		sessions[userID] = m
 	}
 	if e, ok := m[sessionID]; ok {
 		e.lastSeen = time.Now()
@@ -49,10 +49,10 @@ func RecordSession(apiKey, sessionID string) {
 
 // GetActiveSessions returns the number of distinct active sessions for the given apiKey.
 // A session is considered active if it was seen within the last 60 seconds.
-func GetActiveSessions(apiKey string) int64 {
+func GetActiveSessions(userID string) int64 {
 	sessionMu.Lock()
 	defer sessionMu.Unlock()
-	m, ok := sessions[apiKey]
+	m, ok := sessions[userID]
 	if !ok {
 		return 0
 	}
@@ -71,14 +71,14 @@ func cleanExpired() {
 	sessionMu.Lock()
 	defer sessionMu.Unlock()
 	now := time.Now()
-	for apiKey, m := range sessions {
+	for uid, m := range sessions {
 		for sid, e := range m {
 			if now.Sub(e.lastSeen) >= sessionTTL {
 				delete(m, sid)
 			}
 		}
 		if len(m) == 0 {
-			delete(sessions, apiKey)
+			delete(sessions, uid)
 		}
 	}
 }

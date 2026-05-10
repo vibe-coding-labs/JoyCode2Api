@@ -85,7 +85,7 @@ const App: React.FC = () => (
         <Route element={<AuthGuard><MainLayout /></AuthGuard>}>
           <Route path="/dashboard" element={<Suspense fallback={pageLoading}><Dashboard /></Suspense>} />
           <Route path="/accounts" element={<Suspense fallback={pageLoading}><Accounts /></Suspense>} />
-          <Route path="/accounts/:apiKey" element={<Suspense fallback={pageLoading}><AccountDetail /></Suspense>} />
+          <Route path="/accounts/:userId" element={<Suspense fallback={pageLoading}><AccountDetail /></Suspense>} />
           <Route path="/settings" element={<Suspense fallback={pageLoading}><Settings /></Suspense>} />
         </Route>
         <Route path="/" element={<OAuthCallback />} />

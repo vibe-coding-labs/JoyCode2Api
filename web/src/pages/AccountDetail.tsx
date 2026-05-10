@@ -15,7 +15,7 @@ import {
   ResponsiveContainer, PieChart, Pie, Cell, AreaChart, Area,
 } from 'recharts';
 import { useParams, useNavigate } from 'react-router-dom';
-import { api } from '../api';
+import { api, accountDisplayName } from '../api';
 import type { Account, AccountStats, ModelInfo, RequestLog } from '../api';
 import SvgClaudeCode from '../components/ClaudeCodeIcon';
 import SvgCodex from '../components/CodexIcon';
@@ -109,7 +109,7 @@ const copyCmd = async (text: string, label: string) => {
 };
 
 const AccountDetail: React.FC = () => {
-  const { apiKey } = useParams<{ apiKey: string }>();
+  const { userId } = useParams<{ userId: string }>();
   const navigate = useNavigate();
   const [account, setAccount] = useState<Account | null>(null);
   const [stats, setStats] = useState<AccountStats | null>(null);
@@ -121,7 +121,7 @@ const AccountDetail: React.FC = () => {
   const [logFilter, setLogFilter] = useState<string>('all');
   const [activeSessions, setActiveSessions] = useState(0);
 
-  const decodedKey = apiKey ? decodeURIComponent(apiKey) : '';
+  const decodedKey = userId ? decodeURIComponent(userId) : '';
 
   const fetchData = async () => {
     setLoading(true);
@@ -131,7 +131,7 @@ const AccountDetail: React.FC = () => {
         api.getAccountStats(decodedKey),
         api.getAccountLogs(decodedKey, 500),
       ]);
-      const acc = accounts.find((a) => a.api_key === decodedKey);
+      const acc = accounts.find((a) => a.user_id === decodedKey);
       setAccount(acc || null);
       setStats(statsData);
       setLogs(logsData.logs || []);
@@ -162,7 +162,7 @@ const AccountDetail: React.FC = () => {
     const poll = async () => {
       try {
         const accounts = await api.listAccounts();
-        const acc = accounts.find((a) => a.api_key === decodedKey);
+        const acc = accounts.find((a) => a.user_id === decodedKey);
         if (acc) setActiveSessions(acc.active_sessions);
       } catch { /* ignore */ }
     };
@@ -298,11 +298,11 @@ const AccountDetail: React.FC = () => {
         <Button icon={<ArrowLeftOutlined />} onClick={() => navigate('/accounts')} type="text" />
         <div style={{ flex: 1 }}>
           <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-            <Typography.Title level={4} style={{ margin: 0 }}>{decodedKey}</Typography.Title>
+            <Typography.Title level={4} style={{ margin: 0 }}>{accountDisplayName(account)}</Typography.Title>
             {account.is_default && <Tag color="blue">默认</Tag>}
           </div>
           <Typography.Text type="secondary" style={{ fontSize: 12 }}>
-            {account.user_id ? account.user_id.slice(0, 2) + '***' + account.user_id.slice(-2) : '-'} · 创建于 {account.created_at?.slice(0, 10) || '-'}
+            {account.user_id} · 创建于 {account.created_at?.slice(0, 10) || '-'}
           </Typography.Text>
           <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginTop: 4 }}>
             <Typography.Text type="secondary" style={{ fontSize: 12 }}>Token:</Typography.Text>
@@ -354,12 +354,12 @@ const AccountDetail: React.FC = () => {
             刷新
           </Button>
           <Popconfirm
-            title={`确定要删除账号「${decodedKey}」吗？`}
+            title={`确定要删除账号「${accountDisplayName(account)}」吗？`}
             description="删除后使用该密钥的客户端将无法访问"
             onConfirm={async () => {
               try {
                 await api.removeAccount(decodedKey);
-                message.success(`账号「${decodedKey}」已删除`);
+                message.success(`账号「${accountDisplayName(account)}」已删除`);
                 navigate('/accounts');
               } catch (e: unknown) {
                 message.error(e instanceof Error ? e.message : '删除账号失败');

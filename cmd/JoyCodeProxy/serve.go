@@ -73,8 +73,8 @@ var serveCmd = &cobra.Command{
 		if s != nil {
 			accounts, _ := s.ListAccounts()
 			if len(accounts) > 0 {
-				if n, err := s.ReassignLogs([]string{"", "joycode", "default"}, accounts[0].APIKey); err == nil && n > 0 {
-					log.Printf("Migrated %d request logs to account %q", n, accounts[0].APIKey)
+				if n, err := s.ReassignLogs([]string{"", "joycode", "default"}, accounts[0].UserID); err == nil && n > 0 {
+					log.Printf("Migrated %d request logs to account %q", n, accounts[0].UserID)
 				}
 			}
 		}
@@ -354,7 +354,7 @@ func requestLogMiddleware(next http.Handler, s *store.Store) http.Handler {
 			if sessionID == "" {
 				sessionID = r.RemoteAddr // fallback: unique per client IP
 			}
-			proxy.RecordSession(resolvedAccount.APIKey, sessionID)
+			proxy.RecordSession(resolvedAccount.UserID, sessionID)
 		}
 
 		rw := &responseWriter{ResponseWriter: w, statusCode: 200}
@@ -372,12 +372,12 @@ func requestLogMiddleware(next http.Handler, s *store.Store) http.Handler {
 			}
 			if apiKey != "" {
 				if account, _ := s.GetAccountByToken(apiKey); account != nil {
-					apiKey = account.APIKey
+					apiKey = account.UserID
 				}
 			}
 			if apiKey == "" {
 				if a, _ := s.GetDefaultAccount(); a != nil {
-					apiKey = a.APIKey
+					apiKey = a.UserID
 				}
 			}
 

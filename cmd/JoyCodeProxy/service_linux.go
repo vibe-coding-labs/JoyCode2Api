@@ -43,7 +43,7 @@ After=network.target
 
 [Service]
 Type=simple
-ExecStart={{.BinaryPath}} serve --port {{.Port}}
+ExecStart={{.BinaryPath}} serve --port {{.Port}} --skip-validation
 Restart=always
 RestartSec=5
 Environment=HOME={{.HomeDir}}

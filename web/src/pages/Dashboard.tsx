@@ -17,7 +17,7 @@ import {
   BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer,
   AreaChart, Area,
 } from 'recharts';
-import { api } from '../api';
+import { api, accountDisplayName } from '../api';
 import type { Stats, Account } from '../api';
 
 const COLORS = ['#00b578', '#36cfc9', '#73d13d', '#95de64', '#1890ff', '#722ed1', '#13c2c2', '#fa8c16'];
@@ -81,7 +81,7 @@ const Dashboard: React.FC = () => {
   }));
 
   const accountData = stats.by_account.map((a) => ({
-    name: a.api_key, value: a.count,
+    name: accountDisplayName(a), value: a.count,
     pct: stats.total_requests > 0 ? Math.round((a.count / stats.total_requests) * 100) : 0,
   }));
 
@@ -110,9 +110,9 @@ const Dashboard: React.FC = () => {
   const accountCols = [
     {
       title: '账号',
-      dataIndex: 'api_key',
-      key: 'key',
-      render: (k: string) => <Typography.Text strong style={{ fontSize: 13 }}>{k}</Typography.Text>,
+      dataIndex: 'user_id',
+      key: 'user_id',
+      render: (_: unknown, record: Account) => <Typography.Text strong style={{ fontSize: 13 }}>{accountDisplayName(record)}</Typography.Text>,
     },
     {
       title: '默认模型',
@@ -124,7 +124,7 @@ const Dashboard: React.FC = () => {
       title: '请求量',
       key: 'count',
       render: (_: unknown, record: Account) => {
-        const found = stats.by_account.find((a) => a.api_key === record.api_key);
+        const found = stats.by_account.find((a) => a.user_id === record.user_id);
         return found ? found.count.toLocaleString() : <Typography.Text type="secondary">0</Typography.Text>;
       },
     },
@@ -451,7 +451,7 @@ const Dashboard: React.FC = () => {
           <Table
             dataSource={accounts}
             columns={accountCols}
-            rowKey="api_key"
+            rowKey="user_id"
             size="small"
             pagination={false}
           />

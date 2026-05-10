@@ -25,31 +25,54 @@ const (
 )
 
 type Account struct {
-	APIKey       string `json:"api_key"`
+	UserID       string `json:"user_id"`
+	Nickname     string `json:"nickname"`
+	Remark       string `json:"remark"`
 	APIToken     string `json:"api_token"`
 	PtKey        string `json:"-"`
-	UserID       string `json:"user_id"`
 	IsDefault    bool   `json:"is_default"`
 	DefaultModel string `json:"default_model"`
 	CreatedAt    string `json:"created_at,omitempty"`
 }
 
+func (a *Account) DisplayName() string {
+	if a.Remark != "" {
+		return a.Remark
+	}
+	if a.Nickname != "" {
+		return a.Nickname
+	}
+	return a.UserID
+}
+
 type AccountInfo struct {
-	APIKey          string `json:"api_key"`
-	APIToken        string `json:"api_token"`
 	UserID          string `json:"user_id"`
+	Nickname        string `json:"nickname"`
+	Remark          string `json:"remark"`
+	APIToken        string `json:"api_token"`
 	IsDefault       bool   `json:"is_default"`
 	DefaultModel    string `json:"default_model"`
 	CreatedAt       string `json:"created_at,omitempty"`
+	DisplayOrder    int    `json:"display_order"`
 	ActiveSessions  int64  `json:"active_sessions"`
 	TotalRequests   int    `json:"total_requests"`
 	TodayRequests   int    `json:"today_requests"`
-	TotalTokens         int    `json:"total_tokens"`
-	TodayTokens         int    `json:"today_tokens"`
+	TotalTokens     int    `json:"total_tokens"`
+	TodayTokens     int    `json:"today_tokens"`
 	CredentialValid      int    `json:"credential_valid"`               // -1=unknown, 0=expired, 1=valid
 	CredentialCheckedAt string `json:"credential_checked_at,omitempty"`
 	CredentialRefreshAt string `json:"credential_refreshed_at,omitempty"`
 	CredentialError     string `json:"credential_error,omitempty"`
+}
+
+func (a *AccountInfo) DisplayName() string {
+	if a.Remark != "" {
+		return a.Remark
+	}
+	if a.Nickname != "" {
+		return a.Nickname
+	}
+	return a.UserID
 }
 
 type Stats struct {
@@ -71,12 +94,26 @@ type ModelCount struct {
 }
 
 type AccountCount struct {
-	APIKey string `json:"api_key"`
-	Count  int    `json:"count"`
+	UserID     string `json:"user_id"`
+	Nickname   string `json:"nickname"`
+	Remark     string `json:"remark"`
+	Count      int    `json:"count"`
+}
+
+func (a *AccountCount) DisplayName() string {
+	if a.Remark != "" {
+		return a.Remark
+	}
+	if a.Nickname != "" {
+		return a.Nickname
+	}
+	return a.UserID
 }
 
 type AccountStats struct {
-	APIKey        string          `json:"api_key"`
+	UserID        string          `json:"user_id"`
+	Nickname      string          `json:"nickname"`
+	Remark        string          `json:"remark"`
 	TotalRequests int             `json:"total_requests"`
 	TotalInputTk  int             `json:"total_input_tokens"`
 	TotalOutputTk int             `json:"total_output_tokens"`
@@ -112,7 +149,7 @@ type HourlyData struct {
 
 type RequestLog struct {
 	ID           int64  `json:"id"`
-	APIKey       string `json:"api_key"`
+	UserID       string `json:"user_id"`
 	Model        string `json:"model"`
 	Endpoint     string `json:"endpoint"`
 	Stream       bool   `json:"stream"`
@@ -200,14 +237,17 @@ func generateToken() string {
 func (s *Store) migrate() error {
 	_, err := s.db.Exec(`
 		CREATE TABLE IF NOT EXISTS accounts (
-			api_key TEXT PRIMARY KEY,
+			user_id TEXT PRIMARY KEY,
+			nickname TEXT DEFAULT '',
+			remark TEXT DEFAULT '',
 			api_token TEXT NOT NULL DEFAULT '',
 			pt_key TEXT NOT NULL,
-			user_id TEXT NOT NULL,
 			is_default INTEGER DEFAULT 0,
 			default_model TEXT DEFAULT '',
 			created_at TEXT DEFAULT (datetime('now', 'localtime')),
-			updated_at TEXT DEFAULT (datetime('now', 'localtime'))
+			updated_at TEXT DEFAULT (datetime('now', 'localtime')),
+			credential_refreshed_at TEXT DEFAULT '',
+			credential_valid INTEGER DEFAULT -1
 		);
 		CREATE TABLE IF NOT EXISTS settings (
 			key TEXT PRIMARY KEY,
@@ -236,39 +276,126 @@ func (s *Store) migrate() error {
 	s.db.Exec("ALTER TABLE request_logs ADD COLUMN input_tokens INTEGER DEFAULT 0")
 	s.db.Exec("ALTER TABLE request_logs ADD COLUMN output_tokens INTEGER DEFAULT 0")
 
-	// Migration: add api_token column to existing DBs
-	s.db.Exec("ALTER TABLE accounts ADD COLUMN api_token TEXT NOT NULL DEFAULT ''")
+	// Migration: add display_order column to accounts
+	s.db.Exec("ALTER TABLE accounts ADD COLUMN display_order INTEGER DEFAULT 0")
 
-	// Generate tokens for accounts missing one
-	rows, err := s.db.Query("SELECT api_key FROM accounts WHERE api_token = ''")
-	if err != nil {
-		return nil
-	}
-	defer rows.Close()
-	for rows.Next() {
-		var key string
-		if err := rows.Scan(&key); err != nil {
-			continue
-		}
-		token := generateToken()
-		s.db.Exec("UPDATE accounts SET api_token = ? WHERE api_key = ?", token, key)
-	}
-
-	// Migration: add credential_refreshed_at column to accounts
-	s.db.Exec("ALTER TABLE accounts ADD COLUMN credential_refreshed_at TEXT DEFAULT ''")
-
-	// Migration: add credential_valid column to accounts (1=valid, 0=expired, -1=unknown)
-	s.db.Exec("ALTER TABLE accounts ADD COLUMN credential_valid INTEGER DEFAULT -1")
+	// Migration: migrate old schema (api_key as PK) to new schema (user_id as PK)
+	s.migrateUserIDAsPK()
 
 	// Migration: fix historical UTC timestamps to localtime
 	s.migrateUTCTimestamps()
 
+	// Migration: initialize display_order for existing accounts
+	s.migrateDisplayOrder()
+
 	return nil
+}
+
+// migrateUserIDAsPK migrates the old accounts table (api_key as PK) to the new
+// schema where user_id is the primary key. If the table already uses user_id as
+// PK this is a no-op.
+func (s *Store) migrateUserIDAsPK() {
+	// Check if migration is needed: old schema has api_key as PK
+	var colName string
+	err := s.db.QueryRow("SELECT name FROM pragma_table_info('accounts') WHERE pk = 1").Scan(&colName)
+	if err != nil {
+		slog.Error("store: migrateUserIDAsPK pragma check failed", "error", err)
+		return
+	}
+	if colName == "user_id" {
+		// Already on new schema
+		return
+	}
+	slog.Info("store: migrating accounts table from api_key PK to user_id PK")
+
+	// Create new table
+	_, err = s.db.Exec(`
+		CREATE TABLE accounts_new (
+			user_id TEXT PRIMARY KEY,
+			nickname TEXT DEFAULT '',
+			remark TEXT DEFAULT '',
+			api_token TEXT NOT NULL DEFAULT '',
+			pt_key TEXT NOT NULL,
+			is_default INTEGER DEFAULT 0,
+			default_model TEXT DEFAULT '',
+			created_at TEXT DEFAULT (datetime('now', 'localtime')),
+			updated_at TEXT DEFAULT (datetime('now', 'localtime')),
+			credential_refreshed_at TEXT DEFAULT '',
+			credential_valid INTEGER DEFAULT -1
+		)`)
+	if err != nil {
+		slog.Error("store: migrateUserIDAsPK create accounts_new failed", "error", err)
+		return
+	}
+
+	// Copy data from old table:
+	//   user_id = COALESCE(NULLIF(old.user_id, ''), 'local_' || old.api_key)
+	//   nickname = old.api_key (the old display name becomes the nickname)
+	//   api_token, pt_key, is_default, default_model, created_at, updated_at,
+	//   credential_refreshed_at, credential_valid carried over
+	_, err = s.db.Exec(`
+		INSERT INTO accounts_new (user_id, nickname, api_token, pt_key, is_default, default_model, created_at, updated_at, credential_refreshed_at, credential_valid)
+		SELECT
+			CASE WHEN user_id = '' OR user_id IS NULL THEN 'local_' || api_key ELSE user_id END,
+			api_key,
+			COALESCE(api_token, ''),
+			pt_key,
+			is_default,
+			COALESCE(default_model, ''),
+			created_at,
+			COALESCE(updated_at, created_at),
+			COALESCE(credential_refreshed_at, ''),
+			COALESCE(credential_valid, -1)
+		FROM accounts`)
+	if err != nil {
+		slog.Error("store: migrateUserIDAsPK copy data failed", "error", err)
+		return
+	}
+
+	// Build a mapping of old api_key -> new user_id from the old table for log migration
+	type mapping struct {
+		oldAPIKey string
+		newUserID string
+	}
+	rows, err := s.db.Query(`
+		SELECT api_key,
+			CASE WHEN user_id = '' OR user_id IS NULL THEN 'local_' || api_key ELSE user_id END
+		FROM accounts`)
+	if err == nil {
+		var mappings []mapping
+		for rows.Next() {
+			var m mapping
+			if rows.Scan(&m.oldAPIKey, &m.newUserID) == nil {
+				mappings = append(mappings, m)
+			}
+		}
+		rows.Close()
+
+		// Migrate request_logs.api_key from old display names to new user_ids
+		for _, m := range mappings {
+			if m.oldAPIKey != m.newUserID {
+				s.db.Exec("UPDATE request_logs SET api_key = ? WHERE api_key = ?", m.newUserID, m.oldAPIKey)
+			}
+		}
+	}
+
+	// Swap tables
+	_, err = s.db.Exec("DROP TABLE accounts")
+	if err != nil {
+		slog.Error("store: migrateUserIDAsPK drop old table failed", "error", err)
+		return
+	}
+	_, err = s.db.Exec("ALTER TABLE accounts_new RENAME TO accounts")
+	if err != nil {
+		slog.Error("store: migrateUserIDAsPK rename new table failed", "error", err)
+		return
+	}
+	slog.Info("store: accounts table migrated to user_id PK successfully")
 }
 
 // migrateUTCTimestamps converts existing UTC timestamps to localtime.
 // Uses SQLite to check if the newest record's time is behind local now by more than
-// 30 minutes — if so, the data was stored in UTC and needs +offset hours.
+// 30 minutes -- if so, the data was stored in UTC and needs +offset hours.
 func (s *Store) migrateUTCTimestamps() {
 	_, offset := time.Now().Zone()
 	hours := offset / 3600
@@ -287,6 +414,30 @@ func (s *Store) migrateUTCTimestamps() {
 	s.db.Exec(fmt.Sprintf("UPDATE accounts SET created_at = datetime(created_at, '+%d hours') WHERE created_at < datetime('now', 'localtime', '-30 minutes')", hours))
 	s.db.Exec(fmt.Sprintf("UPDATE settings SET updated_at = datetime(updated_at, '+%d hours') WHERE updated_at < datetime('now', 'localtime', '-30 minutes')", hours))
 	slog.Info("migrated UTC timestamps to localtime", "offset_hours", hours, "records_fixed", count)
+}
+
+func (s *Store) migrateDisplayOrder() {
+	var count int
+	s.db.QueryRow("SELECT COUNT(*) FROM accounts WHERE display_order = 0").Scan(&count)
+	if count == 0 {
+		return
+	}
+	slog.Info("store: initializing display_order for existing accounts", "count", count)
+	rows, err := s.db.Query("SELECT user_id FROM accounts ORDER BY created_at")
+	if err != nil {
+		slog.Error("store: migrateDisplayOrder query failed", "error", err)
+		return
+	}
+	defer rows.Close()
+	order := 1
+	for rows.Next() {
+		var userID string
+		if err := rows.Scan(&userID); err != nil {
+			continue
+		}
+		s.db.Exec("UPDATE accounts SET display_order = ? WHERE user_id = ?", order, userID)
+		order++
+	}
 }
 
 // --- Encryption ---
@@ -340,32 +491,39 @@ func (s *Store) decrypt(ciphertext string) (string, error) {
 
 // --- Account CRUD ---
 
-func (s *Store) AddAccount(apiKey, ptKey, userID string, isDefault bool, defaultModel string) error {
+func (s *Store) AddAccount(userID, ptKey, nickname string, isDefault bool, defaultModel string) error {
+	if userID == "" {
+		return fmt.Errorf("user_id cannot be empty")
+	}
+	if ptKey == "" {
+		return fmt.Errorf("pt_key cannot be empty")
+	}
+
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
 	encPtKey, err := s.encrypt(ptKey)
 	if err != nil {
-		slog.Error("store: encrypt pt_key failed", "api_key", apiKey, "error", err)
+		slog.Error("store: encrypt pt_key failed", "user_id", userID, "error", err)
 		return fmt.Errorf("encrypt pt_key: %w", err)
 	}
 
-	// Check if account already exists (by api_key or user_id)
+	// Check if account already exists by user_id
 	var existingToken string
 	err = s.db.QueryRow(
-		"SELECT api_token FROM accounts WHERE api_key = ? OR user_id = ?", apiKey, userID,
+		"SELECT api_token FROM accounts WHERE user_id = ?", userID,
 	).Scan(&existingToken)
 	if err == nil {
-		// Account exists: update pt_key only, preserve api_token
+		// Account exists: only update pt_key; preserve nickname, remark, display_order, etc.
 		_, err = s.db.Exec(
-			"UPDATE accounts SET pt_key = ?, user_id = ?, updated_at = datetime('now', 'localtime') WHERE api_key = ? OR user_id = ?",
-			encPtKey, userID, apiKey, userID,
+			"UPDATE accounts SET pt_key = ?, nickname = CASE WHEN nickname = '' OR nickname IS NULL THEN ? ELSE nickname END, updated_at = datetime('now', 'localtime') WHERE user_id = ?",
+			encPtKey, nickname, userID,
 		)
 		if err != nil {
-			slog.Error("store: update account failed", "api_key", apiKey, "error", err)
+			slog.Error("store: update account failed", "user_id", userID, "error", err)
 			return err
 		}
-		slog.Info("store: updated existing account credentials", "api_key", apiKey, "user_id", userID)
+		slog.Info("store: updated existing account credentials", "user_id", userID)
 		return nil
 	}
 
@@ -379,20 +537,24 @@ func (s *Store) AddAccount(apiKey, ptKey, userID string, isDefault bool, default
 		def = 1
 	}
 
+	// Get max display_order
+	var maxOrder int
+	s.db.QueryRow("SELECT COALESCE(MAX(display_order), 0) FROM accounts").Scan(&maxOrder)
+
 	token := generateToken()
 	_, err = s.db.Exec(
-		"INSERT INTO accounts (api_key, api_token, pt_key, user_id, is_default, default_model) VALUES (?, ?, ?, ?, ?, ?)",
-		apiKey, token, encPtKey, userID, def, defaultModel,
+		"INSERT INTO accounts (user_id, nickname, api_token, pt_key, is_default, default_model, display_order) VALUES (?, ?, ?, ?, ?, ?, ?)",
+		userID, nickname, token, encPtKey, def, defaultModel, maxOrder+1,
 	)
 	if err != nil {
-		slog.Error("store: add account failed", "api_key", apiKey, "error", err)
+		slog.Error("store: add account failed", "user_id", userID, "error", err)
 		return err
 	}
 	return nil
 }
 
 func (s *Store) ListAccounts() ([]AccountInfo, error) {
-	rows, err := s.db.Query("SELECT api_key, api_token, user_id, is_default, default_model, created_at, credential_valid, credential_refreshed_at FROM accounts ORDER BY created_at")
+	rows, err := s.db.Query("SELECT user_id, nickname, remark, api_token, is_default, default_model, created_at, credential_valid, credential_refreshed_at, COALESCE(display_order, 0) FROM accounts ORDER BY display_order, created_at")
 	if err != nil {
 		slog.Error("store: list accounts query failed", "error", err)
 		return nil, err
@@ -403,7 +565,7 @@ func (s *Store) ListAccounts() ([]AccountInfo, error) {
 	for rows.Next() {
 		var a AccountInfo
 		var isDef int
-		if err := rows.Scan(&a.APIKey, &a.APIToken, &a.UserID, &isDef, &a.DefaultModel, &a.CreatedAt, &a.CredentialValid, &a.CredentialRefreshAt); err != nil {
+		if err := rows.Scan(&a.UserID, &a.Nickname, &a.Remark, &a.APIToken, &isDef, &a.DefaultModel, &a.CreatedAt, &a.CredentialValid, &a.CredentialRefreshAt, &a.DisplayOrder); err != nil {
 			slog.Error("store: list accounts scan failed", "error", err)
 			return nil, err
 		}
@@ -462,36 +624,36 @@ func (s *Store) FillAccountStats(accounts []AccountInfo) {
 	todayRows.Close()
 
 	for i := range accounts {
-		if v, ok := allMap[accounts[i].APIKey]; ok {
+		if v, ok := allMap[accounts[i].UserID]; ok {
 			accounts[i].TotalRequests = v[0]
 			accounts[i].TotalTokens = v[1]
 		}
-		if v, ok := todayMap[accounts[i].APIKey]; ok {
+		if v, ok := todayMap[accounts[i].UserID]; ok {
 			accounts[i].TodayRequests = v[0]
 			accounts[i].TodayTokens = v[1]
 		}
 	}
 }
 
-func (s *Store) GetAccount(apiKey string) (*Account, error) {
+func (s *Store) GetAccount(userID string) (*Account, error) {
 	var a Account
 	var encPtKey string
 	var isDef int
 	err := s.db.QueryRow(
-		"SELECT api_key, api_token, pt_key, user_id, is_default, default_model, created_at FROM accounts WHERE api_key = ?",
-		apiKey,
-	).Scan(&a.APIKey, &a.APIToken, &encPtKey, &a.UserID, &isDef, &a.DefaultModel, &a.CreatedAt)
+		"SELECT user_id, nickname, remark, api_token, pt_key, is_default, default_model, created_at FROM accounts WHERE user_id = ?",
+		userID,
+	).Scan(&a.UserID, &a.Nickname, &a.Remark, &a.APIToken, &encPtKey, &isDef, &a.DefaultModel, &a.CreatedAt)
 	if err == sql.ErrNoRows {
 		return nil, nil
 	}
 	if err != nil {
-		slog.Error("store: get account query failed", "api_key", apiKey, "error", err)
+		slog.Error("store: get account query failed", "user_id", userID, "error", err)
 		return nil, err
 	}
 
 	ptKey, err := s.decrypt(encPtKey)
 	if err != nil {
-		slog.Error("store: decrypt pt_key failed", "api_key", apiKey, "error", err)
+		slog.Error("store: decrypt pt_key failed", "user_id", userID, "error", err)
 		return nil, fmt.Errorf("decrypt pt_key: %w", err)
 	}
 	a.PtKey = ptKey
@@ -504,9 +666,9 @@ func (s *Store) GetAccountByToken(token string) (*Account, error) {
 	var encPtKey string
 	var isDef int
 	err := s.db.QueryRow(
-		"SELECT api_key, api_token, pt_key, user_id, is_default, default_model, created_at FROM accounts WHERE api_token = ?",
+		"SELECT user_id, nickname, remark, api_token, pt_key, is_default, default_model, created_at FROM accounts WHERE api_token = ?",
 		token,
-	).Scan(&a.APIKey, &a.APIToken, &encPtKey, &a.UserID, &isDef, &a.DefaultModel, &a.CreatedAt)
+	).Scan(&a.UserID, &a.Nickname, &a.Remark, &a.APIToken, &encPtKey, &isDef, &a.DefaultModel, &a.CreatedAt)
 	if err == sql.ErrNoRows {
 		return nil, nil
 	}
@@ -525,11 +687,11 @@ func (s *Store) GetAccountByToken(token string) (*Account, error) {
 	return &a, nil
 }
 
-func (s *Store) RenewToken(apiKey string) (string, error) {
+func (s *Store) RenewToken(userID string) (string, error) {
 	token := generateToken()
-	_, err := s.db.Exec("UPDATE accounts SET api_token = ?, updated_at = datetime('now', 'localtime') WHERE api_key = ?", token, apiKey)
+	_, err := s.db.Exec("UPDATE accounts SET api_token = ?, updated_at = datetime('now', 'localtime') WHERE user_id = ?", token, userID)
 	if err != nil {
-		slog.Error("store: renew token failed", "api_key", apiKey, "error", err)
+		slog.Error("store: renew token failed", "user_id", userID, "error", err)
 		return "", err
 	}
 	return token, nil
@@ -539,8 +701,8 @@ func (s *Store) GetDefaultAccount() (*Account, error) {
 	var a Account
 	var encPtKey string
 	err := s.db.QueryRow(
-		"SELECT api_key, api_token, pt_key, user_id, is_default, default_model, created_at FROM accounts WHERE is_default = 1 LIMIT 1",
-	).Scan(&a.APIKey, &a.APIToken, &encPtKey, &a.UserID, new(int), &a.DefaultModel, &a.CreatedAt)
+		"SELECT user_id, nickname, remark, api_token, pt_key, is_default, default_model, created_at FROM accounts WHERE is_default = 1 LIMIT 1",
+	).Scan(&a.UserID, &a.Nickname, &a.Remark, &a.APIToken, &encPtKey, new(int), &a.DefaultModel, &a.CreatedAt)
 	if err == sql.ErrNoRows {
 		return nil, nil
 	}
@@ -559,10 +721,28 @@ func (s *Store) GetDefaultAccount() (*Account, error) {
 	return &a, nil
 }
 
-func (s *Store) RemoveAccount(apiKey string) error {
-	_, err := s.db.Exec("DELETE FROM accounts WHERE api_key = ?", apiKey)
+func (s *Store) ReorderAccounts(userIDs []string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	tx, err := s.db.Begin()
 	if err != nil {
-		slog.Error("store: remove account failed", "api_key", apiKey, "error", err)
+		return fmt.Errorf("begin tx: %w", err)
+	}
+	defer tx.Rollback()
+
+	for i, uid := range userIDs {
+		if _, err := tx.Exec("UPDATE accounts SET display_order = ? WHERE user_id = ?", i+1, uid); err != nil {
+			return fmt.Errorf("update display_order for %s: %w", uid, err)
+		}
+	}
+	return tx.Commit()
+}
+
+func (s *Store) RemoveAccount(userID string) error {
+	_, err := s.db.Exec("DELETE FROM accounts WHERE user_id = ?", userID)
+	if err != nil {
+		slog.Error("store: remove account failed", "user_id", userID, "error", err)
 	}
 	return err
 }
@@ -578,23 +758,23 @@ func (s *Store) ClearAllAccounts() (int, error) {
 }
 
 // UpdatePtKey updates the encrypted pt_key for an account.
-func (s *Store) UpdatePtKey(apiKey, ptKey string) error {
+func (s *Store) UpdatePtKey(userID, ptKey string) error {
 	encPtKey, err := s.encrypt(ptKey)
 	if err != nil {
-		slog.Error("store: encrypt pt_key for update failed", "api_key", apiKey, "error", err)
+		slog.Error("store: encrypt pt_key for update failed", "user_id", userID, "error", err)
 		return fmt.Errorf("encrypt pt_key: %w", err)
 	}
 	result, err := s.db.Exec(
-		"UPDATE accounts SET pt_key = ?, updated_at = datetime('now', 'localtime'), credential_refreshed_at = datetime('now', 'localtime') WHERE api_key = ?",
-		encPtKey, apiKey,
+		"UPDATE accounts SET pt_key = ?, updated_at = datetime('now', 'localtime'), credential_refreshed_at = datetime('now', 'localtime') WHERE user_id = ?",
+		encPtKey, userID,
 	)
 	if err != nil {
-		slog.Error("store: update pt_key failed", "api_key", apiKey, "error", err)
+		slog.Error("store: update pt_key failed", "user_id", userID, "error", err)
 		return err
 	}
 	rows, _ := result.RowsAffected()
 	slog.Info("store: pt_key updated",
-		"api_key", apiKey,
+		"user_id", userID,
 		"rows_affected", rows,
 	)
 	return nil
@@ -602,20 +782,20 @@ func (s *Store) UpdatePtKey(apiKey, ptKey string) error {
 
 // UpdateCredentialRefreshedAt sets credential_refreshed_at to now for an account
 // that was validated but did not need a pt_key refresh.
-func (s *Store) UpdateCredentialRefreshedAt(apiKey string) {
+func (s *Store) UpdateCredentialRefreshedAt(userID string) {
 	s.db.Exec(
-		"UPDATE accounts SET credential_refreshed_at = datetime('now', 'localtime') WHERE api_key = ?",
-		apiKey,
+		"UPDATE accounts SET credential_refreshed_at = datetime('now', 'localtime') WHERE user_id = ?",
+		userID,
 	)
 }
 
 // SetCredentialValid updates the credential_valid status for an account.
-func (s *Store) SetCredentialValid(apiKey string, valid bool) {
+func (s *Store) SetCredentialValid(userID string, valid bool) {
 	v := 0
 	if valid {
 		v = 1
 	}
-	s.db.Exec("UPDATE accounts SET credential_valid = ? WHERE api_key = ?", v, apiKey)
+	s.db.Exec("UPDATE accounts SET credential_valid = ? WHERE user_id = ?", v, userID)
 }
 
 // ListStaleAccounts returns accounts that need credential checking.
@@ -626,7 +806,7 @@ func (s *Store) ListStaleAccounts(threshold time.Duration) ([]Account, error) {
 	normalCutoff := time.Now().Add(-threshold).Format("2006-01-02 15:04:05")
 	backoffCutoff := time.Now().Add(-threshold * 4).Format("2006-01-02 15:04:05")
 	rows, err := s.db.Query(
-		`SELECT api_key, pt_key, user_id, default_model FROM accounts
+		`SELECT user_id, nickname, pt_key, default_model FROM accounts
 		 WHERE credential_refreshed_at = ''
 		    OR credential_valid = -1
 		    OR (credential_valid = 1 AND credential_refreshed_at < ?)
@@ -644,13 +824,13 @@ func (s *Store) ListStaleAccounts(threshold time.Duration) ([]Account, error) {
 	for rows.Next() {
 		var a Account
 		var encPtKey string
-		if err := rows.Scan(&a.APIKey, &encPtKey, &a.UserID, &a.DefaultModel); err != nil {
+		if err := rows.Scan(&a.UserID, &a.Nickname, &encPtKey, &a.DefaultModel); err != nil {
 			slog.Error("store: list stale accounts scan failed", "error", err)
 			return nil, err
 		}
 		ptKey, err := s.decrypt(encPtKey)
 		if err != nil {
-			slog.Error("store: decrypt pt_key failed for stale account", "api_key", a.APIKey, "error", err)
+			slog.Error("store: decrypt pt_key failed for stale account", "user_id", a.UserID, "error", err)
 			continue
 		}
 		a.PtKey = ptKey
@@ -661,7 +841,7 @@ func (s *Store) ListStaleAccounts(threshold time.Duration) ([]Account, error) {
 
 // ListAllAccountsWithCredentials returns all accounts with decrypted pt_keys.
 func (s *Store) ListAllAccountsWithCredentials() ([]Account, error) {
-	rows, err := s.db.Query("SELECT api_key, pt_key, user_id, default_model FROM accounts ORDER BY created_at")
+	rows, err := s.db.Query("SELECT user_id, nickname, pt_key, default_model FROM accounts ORDER BY created_at")
 	if err != nil {
 		slog.Error("store: list accounts with credentials query failed", "error", err)
 		return nil, err
@@ -672,13 +852,13 @@ func (s *Store) ListAllAccountsWithCredentials() ([]Account, error) {
 	for rows.Next() {
 		var a Account
 		var encPtKey string
-		if err := rows.Scan(&a.APIKey, &encPtKey, &a.UserID, &a.DefaultModel); err != nil {
+		if err := rows.Scan(&a.UserID, &a.Nickname, &encPtKey, &a.DefaultModel); err != nil {
 			slog.Error("store: list accounts with credentials scan failed", "error", err)
 			return nil, err
 		}
 		ptKey, err := s.decrypt(encPtKey)
 		if err != nil {
-			slog.Error("store: decrypt pt_key failed for keepalive", "api_key", a.APIKey, "error", err)
+			slog.Error("store: decrypt pt_key failed for keepalive", "user_id", a.UserID, "error", err)
 			continue
 		}
 		a.PtKey = ptKey
@@ -687,31 +867,30 @@ func (s *Store) ListAllAccountsWithCredentials() ([]Account, error) {
 	return accounts, rows.Err()
 }
 
-func (s *Store) RenameAccount(oldKey, newKey string) error {
+// UpdateRemark updates the remark for an account.
+func (s *Store) UpdateRemark(userID, remark string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	result, err := s.db.Exec("UPDATE accounts SET api_key = ?, updated_at = datetime('now', 'localtime') WHERE api_key = ?", newKey, oldKey)
+	result, err := s.db.Exec("UPDATE accounts SET remark = ?, updated_at = datetime('now', 'localtime') WHERE user_id = ?", remark, userID)
 	if err != nil {
-		slog.Error("store: rename account failed", "old_key", oldKey, "new_key", newKey, "error", err)
+		slog.Error("store: update remark failed", "user_id", userID, "error", err)
 		return err
 	}
 	n, _ := result.RowsAffected()
 	if n == 0 {
-		return fmt.Errorf("account %q not found", oldKey)
+		return fmt.Errorf("account %q not found", userID)
 	}
-	// Also update request_logs
-	s.db.Exec("UPDATE request_logs SET api_key = ? WHERE api_key = ?", newKey, oldKey)
 	return nil
 }
 
-func (s *Store) SetDefault(apiKey string) error {
+func (s *Store) SetDefault(userID string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
 	tx, err := s.db.Begin()
 	if err != nil {
-		slog.Error("store: set default begin tx failed", "api_key", apiKey, "error", err)
+		slog.Error("store: set default begin tx failed", "user_id", userID, "error", err)
 		return err
 	}
 	defer tx.Rollback()
@@ -720,20 +899,20 @@ func (s *Store) SetDefault(apiKey string) error {
 		slog.Error("store: set default clear failed", "error", err)
 		return err
 	}
-	if _, err := tx.Exec("UPDATE accounts SET is_default = 1, updated_at = datetime('now', 'localtime') WHERE api_key = ?", apiKey); err != nil {
-		slog.Error("store: set default assign failed", "api_key", apiKey, "error", err)
+	if _, err := tx.Exec("UPDATE accounts SET is_default = 1, updated_at = datetime('now', 'localtime') WHERE user_id = ?", userID); err != nil {
+		slog.Error("store: set default assign failed", "user_id", userID, "error", err)
 		return err
 	}
 	return tx.Commit()
 }
 
-func (s *Store) UpdateAccountModel(apiKey, model string) error {
+func (s *Store) UpdateAccountModel(userID, model string) error {
 	_, err := s.db.Exec(
-		"UPDATE accounts SET default_model = ?, updated_at = datetime('now', 'localtime') WHERE api_key = ?",
-		model, apiKey,
+		"UPDATE accounts SET default_model = ?, updated_at = datetime('now', 'localtime') WHERE user_id = ?",
+		model, userID,
 	)
 	if err != nil {
-		slog.Error("store: update account model failed", "api_key", apiKey, "model", model, "error", err)
+		slog.Error("store: update account model failed", "user_id", userID, "model", model, "error", err)
 	}
 	return err
 }
@@ -811,17 +990,17 @@ func (s *Store) SetSettings(settings map[string]string) error {
 
 // --- Request Logging ---
 
-func (s *Store) LogRequest(apiKey, model, endpoint string, stream bool, statusCode int, latencyMs int64, errMsg string, inputTokens, outputTokens int) error {
+func (s *Store) LogRequest(userID, model, endpoint string, stream bool, statusCode int, latencyMs int64, errMsg string, inputTokens, outputTokens int) error {
 	sInt := 0
 	if stream {
 		sInt = 1
 	}
 	_, err := s.db.Exec(
 		"INSERT INTO request_logs (api_key, model, endpoint, stream, status_code, latency_ms, error_message, input_tokens, output_tokens) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
-		apiKey, model, endpoint, sInt, statusCode, latencyMs, errMsg, inputTokens, outputTokens,
+		userID, model, endpoint, sInt, statusCode, latencyMs, errMsg, inputTokens, outputTokens,
 	)
 	if err != nil {
-		slog.Error("store: log request failed", "api_key", apiKey, "endpoint", endpoint, "error", err)
+		slog.Error("store: log request failed", "user_id", userID, "endpoint", endpoint, "error", err)
 	}
 	return err
 }
@@ -861,7 +1040,7 @@ func (s *Store) GetStats() (*Stats, error) {
 	validKeys := make(map[string]bool)
 	accounts, _ := s.ListAccounts()
 	for _, a := range accounts {
-		validKeys[a.APIKey] = true
+		validKeys[a.UserID] = true
 	}
 
 	rows2, err := s.db.Query("SELECT api_key, COUNT(*) as cnt FROM request_logs WHERE "+tf+" GROUP BY api_key ORDER BY cnt DESC")
@@ -873,17 +1052,17 @@ func (s *Store) GetStats() (*Stats, error) {
 	otherCount := 0
 	for rows2.Next() {
 		var ac AccountCount
-		if err := rows2.Scan(&ac.APIKey, &ac.Count); err != nil {
+		if err := rows2.Scan(&ac.UserID, &ac.Count); err != nil {
 			return nil, err
 		}
-		if validKeys[ac.APIKey] {
+		if validKeys[ac.UserID] {
 			stats.ByAccount = append(stats.ByAccount, ac)
 		} else {
 			otherCount += ac.Count
 		}
 	}
 	if otherCount > 0 {
-		stats.ByAccount = append(stats.ByAccount, AccountCount{APIKey: "其他", Count: otherCount})
+		stats.ByAccount = append(stats.ByAccount, AccountCount{UserID: "其他", Count: otherCount})
 	}
 
 	return stats, nil
@@ -924,19 +1103,19 @@ func (s *Store) GetHourlyStats() ([]HourlyData, error) {
 	return result, rows.Err()
 }
 
-func (s *Store) GetAccountStats(apiKey string) (*AccountStats, error) {
-	as := &AccountStats{APIKey: apiKey}
+func (s *Store) GetAccountStats(userID string) (*AccountStats, error) {
+	as := &AccountStats{UserID: userID}
 	tf := "created_at >= datetime('now', '-24 hours')"
 
-	s.db.QueryRow("SELECT COUNT(*) FROM request_logs WHERE api_key = ? AND "+tf, apiKey).Scan(&as.TotalRequests)
-	s.db.QueryRow("SELECT COALESCE(AVG(latency_ms), 0) FROM request_logs WHERE api_key = ? AND "+tf, apiKey).Scan(&as.AvgLatencyMs)
-	s.db.QueryRow("SELECT COUNT(*) FROM request_logs WHERE api_key = ? AND stream = 1 AND "+tf, apiKey).Scan(&as.StreamCount)
-	s.db.QueryRow("SELECT COUNT(*) FROM request_logs WHERE api_key = ? AND status_code >= 400 AND "+tf, apiKey).Scan(&as.ErrorCount)
-	s.db.QueryRow("SELECT COUNT(*) FROM request_logs WHERE api_key = ? AND status_code < 400 AND "+tf, apiKey).Scan(&as.SuccessCount)
-	s.db.QueryRow("SELECT COALESCE(SUM(input_tokens), 0) FROM request_logs WHERE api_key = ? AND "+tf, apiKey).Scan(&as.TotalInputTk)
-	s.db.QueryRow("SELECT COALESCE(SUM(output_tokens), 0) FROM request_logs WHERE api_key = ? AND "+tf, apiKey).Scan(&as.TotalOutputTk)
+	s.db.QueryRow("SELECT COUNT(*) FROM request_logs WHERE api_key = ? AND "+tf, userID).Scan(&as.TotalRequests)
+	s.db.QueryRow("SELECT COALESCE(AVG(latency_ms), 0) FROM request_logs WHERE api_key = ? AND "+tf, userID).Scan(&as.AvgLatencyMs)
+	s.db.QueryRow("SELECT COUNT(*) FROM request_logs WHERE api_key = ? AND stream = 1 AND "+tf, userID).Scan(&as.StreamCount)
+	s.db.QueryRow("SELECT COUNT(*) FROM request_logs WHERE api_key = ? AND status_code >= 400 AND "+tf, userID).Scan(&as.ErrorCount)
+	s.db.QueryRow("SELECT COUNT(*) FROM request_logs WHERE api_key = ? AND status_code < 400 AND "+tf, userID).Scan(&as.SuccessCount)
+	s.db.QueryRow("SELECT COALESCE(SUM(input_tokens), 0) FROM request_logs WHERE api_key = ? AND "+tf, userID).Scan(&as.TotalInputTk)
+	s.db.QueryRow("SELECT COALESCE(SUM(output_tokens), 0) FROM request_logs WHERE api_key = ? AND "+tf, userID).Scan(&as.TotalOutputTk)
 
-	rows, err := s.db.Query("SELECT model, COUNT(*) as cnt FROM request_logs WHERE api_key = ? AND "+tf+" GROUP BY model ORDER BY cnt DESC", apiKey)
+	rows, err := s.db.Query("SELECT model, COUNT(*) as cnt FROM request_logs WHERE api_key = ? AND "+tf+" GROUP BY model ORDER BY cnt DESC", userID)
 	if err != nil {
 		return nil, err
 	}
@@ -949,7 +1128,7 @@ func (s *Store) GetAccountStats(apiKey string) (*AccountStats, error) {
 		as.ByModel = append(as.ByModel, mc)
 	}
 
-	rows2, err := s.db.Query("SELECT endpoint, COUNT(*) as cnt FROM request_logs WHERE api_key = ? AND "+tf+" GROUP BY endpoint ORDER BY cnt DESC", apiKey)
+	rows2, err := s.db.Query("SELECT endpoint, COUNT(*) as cnt FROM request_logs WHERE api_key = ? AND "+tf+" GROUP BY endpoint ORDER BY cnt DESC", userID)
 	if err != nil {
 		return nil, err
 	}
@@ -964,10 +1143,10 @@ func (s *Store) GetAccountStats(apiKey string) (*AccountStats, error) {
 
 	// All-time totals
 	allTime := &AllTimeTotals{}
-	s.db.QueryRow("SELECT COUNT(*) FROM request_logs WHERE api_key = ?", apiKey).Scan(&allTime.TotalRequests)
-	s.db.QueryRow("SELECT COALESCE(SUM(input_tokens), 0) FROM request_logs WHERE api_key = ?", apiKey).Scan(&allTime.TotalInputTk)
-	s.db.QueryRow("SELECT COALESCE(SUM(output_tokens), 0) FROM request_logs WHERE api_key = ?", apiKey).Scan(&allTime.TotalOutputTk)
-	s.db.QueryRow("SELECT COUNT(*) FROM request_logs WHERE api_key = ? AND status_code >= 400", apiKey).Scan(&allTime.ErrorCount)
+	s.db.QueryRow("SELECT COUNT(*) FROM request_logs WHERE api_key = ?", userID).Scan(&allTime.TotalRequests)
+	s.db.QueryRow("SELECT COALESCE(SUM(input_tokens), 0) FROM request_logs WHERE api_key = ?", userID).Scan(&allTime.TotalInputTk)
+	s.db.QueryRow("SELECT COALESCE(SUM(output_tokens), 0) FROM request_logs WHERE api_key = ?", userID).Scan(&allTime.TotalOutputTk)
+	s.db.QueryRow("SELECT COUNT(*) FROM request_logs WHERE api_key = ? AND status_code >= 400", userID).Scan(&allTime.ErrorCount)
 	as.AllTime = allTime
 
 	// Hourly breakdown for last 24 hours
@@ -979,7 +1158,7 @@ func (s *Store) GetAccountStats(apiKey string) (*AccountStats, error) {
 			SUM(CASE WHEN status_code >= 400 THEN 1 ELSE 0 END)
 		FROM request_logs
 		WHERE api_key = ? AND `+tf+`
-		GROUP BY hour ORDER BY hour`, apiKey)
+		GROUP BY hour ORDER BY hour`, userID)
 	if err == nil {
 		defer hRows.Close()
 		for hRows.Next() {
@@ -993,13 +1172,13 @@ func (s *Store) GetAccountStats(apiKey string) (*AccountStats, error) {
 	return as, nil
 }
 
-func (s *Store) GetAccountLogs(apiKey string, limit int) ([]RequestLog, error) {
+func (s *Store) GetAccountLogs(userID string, limit int) ([]RequestLog, error) {
 	if limit <= 0 {
 		limit = 100
 	}
 	rows, err := s.db.Query(
 		"SELECT id, api_key, model, endpoint, stream, status_code, latency_ms, COALESCE(error_message, ''), COALESCE(input_tokens, 0), COALESCE(output_tokens, 0), created_at FROM request_logs WHERE api_key = ? ORDER BY id DESC LIMIT ?",
-		apiKey, limit,
+		userID, limit,
 	)
 	if err != nil {
 		return nil, err
@@ -1010,7 +1189,7 @@ func (s *Store) GetAccountLogs(apiKey string, limit int) ([]RequestLog, error) {
 	for rows.Next() {
 		var l RequestLog
 		var streamInt int
-		if err := rows.Scan(&l.ID, &l.APIKey, &l.Model, &l.Endpoint, &streamInt, &l.StatusCode, &l.LatencyMs, &l.ErrorMessage, &l.InputTokens, &l.OutputTokens, &l.CreatedAt); err != nil {
+		if err := rows.Scan(&l.ID, &l.UserID, &l.Model, &l.Endpoint, &streamInt, &l.StatusCode, &l.LatencyMs, &l.ErrorMessage, &l.InputTokens, &l.OutputTokens, &l.CreatedAt); err != nil {
 			return nil, err
 		}
 		l.Stream = streamInt == 1
@@ -1036,7 +1215,7 @@ func (s *Store) GetRecentLogs(limit int) ([]RequestLog, error) {
 	for rows.Next() {
 		var l RequestLog
 		var streamInt int
-		if err := rows.Scan(&l.ID, &l.APIKey, &l.Model, &l.Endpoint, &streamInt, &l.StatusCode, &l.LatencyMs, &l.ErrorMessage, &l.InputTokens, &l.OutputTokens, &l.CreatedAt); err != nil {
+		if err := rows.Scan(&l.ID, &l.UserID, &l.Model, &l.Endpoint, &streamInt, &l.StatusCode, &l.LatencyMs, &l.ErrorMessage, &l.InputTokens, &l.OutputTokens, &l.CreatedAt); err != nil {
 			return nil, err
 		}
 		l.Stream = streamInt == 1
@@ -1065,7 +1244,7 @@ func (s *Store) GetRecentErrors(limit int) ([]RequestLog, error) {
 	for rows.Next() {
 		var l RequestLog
 		var streamInt int
-		if err := rows.Scan(&l.ID, &l.APIKey, &l.Model, &l.Endpoint, &streamInt, &l.StatusCode, &l.LatencyMs, &l.ErrorMessage, &l.InputTokens, &l.OutputTokens, &l.CreatedAt); err != nil {
+		if err := rows.Scan(&l.ID, &l.UserID, &l.Model, &l.Endpoint, &streamInt, &l.StatusCode, &l.LatencyMs, &l.ErrorMessage, &l.InputTokens, &l.OutputTokens, &l.CreatedAt); err != nil {
 			slog.Error("store: get recent errors scan failed", "error", err)
 			return nil, err
 		}
@@ -1098,11 +1277,11 @@ func (s *Store) CleanupOldLogs(days int) (int64, error) {
 	return affected, nil
 }
 
-// MigrateTokenLogs reassigns request_logs stored under api_token values to the account's api_key.
+// MigrateTokenLogs reassigns request_logs stored under api_token values to the account's user_id.
 func (s *Store) MigrateTokenLogs() (int64, error) {
 	result, err := s.db.Exec(`
 		UPDATE request_logs SET api_key = (
-			SELECT a.api_key FROM accounts a WHERE a.api_token = request_logs.api_key
+			SELECT a.user_id FROM accounts a WHERE a.api_token = request_logs.api_key
 		) WHERE api_key LIKE 'sk-joy-%' AND EXISTS (
 			SELECT 1 FROM accounts a WHERE a.api_token = request_logs.api_key
 		)`)
@@ -1143,7 +1322,7 @@ func EnsureDataDir() (string, error) {
 	return dir, nil
 }
 
-// Copy from os.ReadFile pattern — used to check if DB exists.
+// Copy from os.ReadFile pattern -- used to check if DB exists.
 func DBExists() bool {
 	path, err := DefaultDBPath()
 	if err != nil {
@@ -1152,4 +1331,3 @@ func DBExists() bool {
 	_, err = os.Stat(path)
 	return err == nil
 }
-

@@ -15,6 +15,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -413,6 +414,15 @@ func generateRandomHex(n int) string {
 	return hex.EncodeToString(b)
 }
 
+func formatKeys(m map[string]interface{}) string {
+	keys := make([]string, 0, len(m))
+	for k := range m {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	return strings.Join(keys, ",")
+}
+
 func setCors(w http.ResponseWriter) {
 	w.Header().Set("Access-Control-Allow-Origin", "*")
 	w.Header().Set("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, OPTIONS")
@@ -468,13 +478,13 @@ func (h *Handler) listAccounts(w http.ResponseWriter, r *http.Request) {
 		accounts = []store.AccountInfo{}
 	}
 	for i := range accounts {
-		accounts[i].ActiveSessions = proxy.GetActiveSessions(accounts[i].APIKey)
+		accounts[i].ActiveSessions = proxy.GetActiveSessions(accounts[i].UserID)
 	}
 	h.store.FillAccountStats(accounts)
 	if h.keeper != nil {
 		statuses := h.keeper.GetAllStatuses()
 		for i := range accounts {
-			if s, ok := statuses[accounts[i].APIKey]; ok {
+			if s, ok := statuses[accounts[i].UserID]; ok {
 				if s.Valid { accounts[i].CredentialValid = 1 } else { accounts[i].CredentialValid = 0 }
 				accounts[i].CredentialCheckedAt = s.LastChecked.Format("2006-01-02 15:04:05")
 				accounts[i].CredentialError = s.ErrorMessage
@@ -486,7 +496,7 @@ func (h *Handler) listAccounts(w http.ResponseWriter, r *http.Request) {
 
 func (h *Handler) addAccount(w http.ResponseWriter, r *http.Request) {
 	var body struct {
-		APIKey       string `json:"api_key"`
+		Nickname     string `json:"nickname"`
 		PtKey        string `json:"pt_key"`
 		UserID       string `json:"user_id"`
 		IsDefault    *bool  `json:"is_default"`
@@ -495,8 +505,8 @@ func (h *Handler) addAccount(w http.ResponseWriter, r *http.Request) {
 	if !readJSONBody(w, r, &body) {
 		return
 	}
-	if body.APIKey == "" || body.PtKey == "" || body.UserID == "" {
-		writeError(w, http.StatusBadRequest, "api_key, pt_key, and user_id are required")
+	if body.UserID == "" || body.PtKey == "" {
+		writeError(w, http.StatusBadRequest, "user_id and pt_key are required")
 		return
 	}
 
@@ -505,13 +515,13 @@ func (h *Handler) addAccount(w http.ResponseWriter, r *http.Request) {
 		isDefault = *body.IsDefault
 	}
 
-	if err := h.store.AddAccount(body.APIKey, body.PtKey, body.UserID, isDefault, body.DefaultModel); err != nil {
-		slog.Error("add account", "api_key", body.APIKey, "error", err)
+	if err := h.store.AddAccount(body.UserID, body.PtKey, body.Nickname, isDefault, body.DefaultModel); err != nil {
+		slog.Error("add account", "user_id", body.UserID, "error", err)
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
 
-	writeJSON(w, http.StatusOK, map[string]interface{}{"ok": true, "api_key": body.APIKey})
+	writeJSON(w, http.StatusOK, map[string]interface{}{"ok": true, "user_id": body.UserID, "nickname": body.Nickname})
 }
 
 func (h *Handler) handleAutoLogin(w http.ResponseWriter, r *http.Request) {
@@ -551,13 +561,27 @@ func (h *Handler) handleAutoLogin(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	apiKey := creds.UserID
+	// Extract userID from data.userId (more reliable than system creds)
+	userID := creds.UserID
+	nickname := userID
 	realName := ""
 	if data, ok := userInfo["data"].(map[string]interface{}); ok {
+		if id, ok := data["userId"].(string); ok && id != "" {
+			userID = id
+		}
 		if name, ok := data["realName"].(string); ok && name != "" {
-			apiKey = name
+			nickname = name
 			realName = name
 		}
+	}
+	if nickname == "" {
+		nickname = userID
+	}
+
+	if userID == "" {
+		slog.Error("auto-login: userId not found from system or API", "creds_user_id", creds.UserID)
+		writeError(w, http.StatusBadRequest, "无法获取用户ID，请先在 JoyCode IDE 中登录")
+		return
 	}
 
 	isDefault := true
@@ -569,17 +593,17 @@ func (h *Handler) handleAutoLogin(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	if err := h.store.AddAccount(apiKey, creds.PtKey, creds.UserID, isDefault, "GLM-5.1"); err != nil {
-		slog.Error("auto-login: save account failed", "api_key", apiKey, "error", err)
+	if err := h.store.AddAccount(userID, creds.PtKey, nickname, isDefault, "GLM-5.1"); err != nil {
+		slog.Error("auto-login: save account failed", "user_id", userID, "error", err)
 		writeError(w, http.StatusInternalServerError, "保存账号失败: "+err.Error())
 		return
 	}
 
-	slog.Info("auto-login: account saved", "api_key", apiKey, "user_id", creds.UserID, "real_name", realName)
+	slog.Info("auto-login: account saved", "user_id", userID, "nickname", nickname)
 	writeJSON(w, http.StatusOK, map[string]interface{}{
 		"ok":         true,
-		"api_key":    apiKey,
-		"user_id":    creds.UserID,
+		"user_id":    userID,
+		"nickname":   nickname,
 		"real_name":  realName,
 		"is_default": isDefault,
 	})
@@ -681,14 +705,32 @@ func (h *Handler) handleOAuthCallback(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	userID, _ := userInfo["userId"].(string)
-	apiKey := userID
+	userID := ""
+	nickname := ""
 	realName := ""
 	if data, ok := userInfo["data"].(map[string]interface{}); ok {
+		if id, ok := data["userId"].(string); ok && id != "" {
+			userID = id
+		}
 		if name, ok := data["realName"].(string); ok && name != "" {
-			apiKey = name
+			nickname = name
 			realName = name
 		}
+	}
+	if nickname == "" {
+		nickname = userID
+	}
+
+	if userID == "" {
+		slog.Error("oauth-callback: userId not found in userInfo response", "keys", formatKeys(userInfo))
+		http.Redirect(w, r, "/?login_error="+url.QueryEscape("无法获取用户ID，请重新授权"), http.StatusFound)
+		return
+	}
+
+	// Log full userInfo response for debugging user_id availability
+	slog.Info("oauth-callback: userInfo response", "user_id", userID, "nickname", nickname, "real_name", realName, "keys", formatKeys(userInfo))
+	if data, ok := userInfo["data"].(map[string]interface{}); ok {
+		slog.Info("oauth-callback: userInfo.data fields", "keys", formatKeys(data))
 	}
 
 	isDefault := true
@@ -700,18 +742,18 @@ func (h *Handler) handleOAuthCallback(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	if err := h.store.AddAccount(apiKey, ptKey, userID, isDefault, "GLM-5.1"); err != nil {
-		slog.Error("oauth-callback: save account failed", "api_key", apiKey, "error", err)
+	if err := h.store.AddAccount(userID, ptKey, nickname, isDefault, "GLM-5.1"); err != nil {
+		slog.Error("oauth-callback: save account failed", "user_id", userID, "error", err)
 		http.Redirect(w, r, "/?login_error="+url.QueryEscape(err.Error()), http.StatusFound)
 		return
 	}
 
-	slog.Info("oauth-callback: account saved", "api_key", apiKey, "user_id", userID, "real_name", realName)
+	slog.Info("oauth-callback: account saved", "user_id", userID, "nickname", nickname, "real_name", realName)
 
 	// Auto-issue JWT so the frontend dashboard is immediately accessible
 	jwtSecret := h.store.GetSetting("auth_jwt_secret")
 	if jwtSecret != "" {
-		if token, err := auth.GenerateToken(apiKey, jwtSecret, 7*24*time.Hour); err == nil {
+		if token, err := auth.GenerateToken(userID, jwtSecret, 7*24*time.Hour); err == nil {
 			http.SetCookie(w, &http.Cookie{
 				Name:     "joycode_auto_jwt",
 				Value:    token,
@@ -723,7 +765,7 @@ func (h *Handler) handleOAuthCallback(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	http.Redirect(w, r, "/?login_success="+url.QueryEscape(apiKey), http.StatusFound)
+	http.Redirect(w, r, "/?login_success="+url.QueryEscape(userID), http.StatusFound)
 }
 
 func (h *Handler) handleQRLoginInit(w http.ResponseWriter, r *http.Request) {
@@ -793,9 +835,19 @@ func (h *Handler) handleQRLoginStatus(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	apiKey := result.RealName
-	if apiKey == "" {
-		apiKey = result.UserID
+	nickname := result.RealName
+	if nickname == "" {
+		nickname = result.UserID
+	}
+
+	if result.UserID == "" {
+		slog.Error("qr-login: userId not found in QR login result")
+		writeJSON(w, http.StatusOK, map[string]interface{}{
+			"status":  "error",
+			"ok":      false,
+			"message": "二维码登录未返回有效的用户ID，请重试",
+		})
+		return
 	}
 
 	isDefault := true
@@ -807,24 +859,23 @@ func (h *Handler) handleQRLoginStatus(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	if err := h.store.AddAccount(apiKey, result.PtKey, result.UserID, isDefault, "GLM-5.1"); err != nil {
-		slog.Error("qr-login save account failed", "api_key", apiKey, "error", err)
+	if err := h.store.AddAccount(result.UserID, result.PtKey, nickname, isDefault, "GLM-5.1"); err != nil {
+		slog.Error("qr-login save account failed", "user_id", result.UserID, "error", err)
 		writeJSON(w, http.StatusOK, map[string]interface{}{
 			"status":  "confirmed",
 			"ok":      false,
-			"api_key": apiKey,
 			"user_id": result.UserID,
 			"message": "登录成功但保存账号失败: " + err.Error(),
 		})
 		return
 	}
 
-	slog.Info("qr-login: account saved", "api_key", apiKey, "user_id", result.UserID)
+	slog.Info("qr-login: account saved", "user_id", result.UserID, "nickname", nickname)
 	writeJSON(w, http.StatusOK, map[string]interface{}{
 		"status":    "confirmed",
 		"ok":        true,
-		"api_key":   apiKey,
 		"user_id":   result.UserID,
+		"nickname":  nickname,
 		"real_name": result.RealName,
 	})
 }
@@ -851,6 +902,8 @@ func (h *Handler) handleAccountAction(w http.ResponseWriter, r *http.Request) {
 	}
 
 	switch {
+	case action == "" && apiKey == "reorder" && r.Method == http.MethodPut:
+		h.reorderAccounts(w, r)
 	case action == "" && r.Method == http.MethodDelete:
 		h.removeAccount(w, r, apiKey)
 	case action == "default" && r.Method == http.MethodPut:
@@ -867,11 +920,30 @@ func (h *Handler) handleAccountAction(w http.ResponseWriter, r *http.Request) {
 		h.getAccountLogs(w, r, apiKey)
 	case action == "renew-token" && r.Method == http.MethodPost:
 		h.renewToken(w, r, apiKey)
-	case action == "rename" && r.Method == http.MethodPut:
-		h.renameAccount(w, r, apiKey)
+	case action == "remark" && r.Method == http.MethodPut:
+		h.updateRemark(w, r, apiKey)
 	default:
 		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
 	}
+}
+
+func (h *Handler) reorderAccounts(w http.ResponseWriter, r *http.Request) {
+	var body struct {
+		UserIDs []string `json:"user_ids"`
+	}
+	if !readJSONBody(w, r, &body) {
+		return
+	}
+	if len(body.UserIDs) == 0 {
+		writeError(w, http.StatusBadRequest, "user_ids is required")
+		return
+	}
+	if err := h.store.ReorderAccounts(body.UserIDs); err != nil {
+		slog.Error("reorder accounts", "error", err)
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]interface{}{"ok": true})
 }
 
 func (h *Handler) removeAccount(w http.ResponseWriter, r *http.Request, apiKey string) {
@@ -1002,24 +1074,20 @@ func (h *Handler) renewToken(w http.ResponseWriter, r *http.Request, apiKey stri
 	writeJSON(w, http.StatusOK, map[string]interface{}{"ok": true, "api_token": token})
 }
 
-func (h *Handler) renameAccount(w http.ResponseWriter, r *http.Request, apiKey string) {
+func (h *Handler) updateRemark(w http.ResponseWriter, r *http.Request, userID string) {
 	var body struct {
-		NewAPIKey string `json:"new_api_key"`
+		Remark string `json:"remark"`
 	}
-	if err := json.NewDecoder(r.Body).Decode(&body); err != nil || body.NewAPIKey == "" {
-		writeError(w, http.StatusBadRequest, "missing new_api_key")
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid request body")
 		return
 	}
-	if body.NewAPIKey == apiKey {
-		writeError(w, http.StatusBadRequest, "new name is same as current")
-		return
-	}
-	if err := h.store.RenameAccount(apiKey, body.NewAPIKey); err != nil {
-		slog.Error("rename account", "old_key", apiKey, "new_key", body.NewAPIKey, "error", err)
+	if err := h.store.UpdateRemark(userID, body.Remark); err != nil {
+		slog.Error("update remark", "user_id", userID, "error", err)
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]interface{}{"ok": true, "old_key": apiKey, "new_key": body.NewAPIKey})
+	writeJSON(w, http.StatusOK, map[string]interface{}{"ok": true, "user_id": userID, "remark": body.Remark})
 }
 
 func (h *Handler) handleClearJoyCodeSession(w http.ResponseWriter, r *http.Request) {

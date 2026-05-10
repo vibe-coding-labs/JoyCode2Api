@@ -22,8 +22,10 @@ const menuItems = [
   { key: '/settings', icon: <SettingOutlined />, label: '系统设置' },
 ];
 
+const COLLAPSED_KEY = 'joycode_sider_collapsed';
+
 const MainLayout: React.FC = () => {
-  const [collapsed, setCollapsed] = useState(false);
+  const [collapsed, setCollapsed] = useState(() => localStorage.getItem(COLLAPSED_KEY) === 'true');
   const navigate = useNavigate();
   const location = useLocation();
   const { token } = theme.useToken();
@@ -50,7 +52,7 @@ const MainLayout: React.FC = () => {
       <Sider
         collapsible
         collapsed={collapsed}
-        onCollapse={setCollapsed}
+        onCollapse={(val) => { setCollapsed(val); localStorage.setItem(COLLAPSED_KEY, String(val)); }}
         style={{ background: token.colorBgContainer }}
       >
         <div style={{

@@ -320,12 +320,21 @@ func buildLoginResult(ptKey, ptPin string) (*QRLoginResult, error) {
 		return nil, err
 	}
 
-	userID, _ := userInfo["userId"].(string)
+	userID := ""
 	realName := ""
 	if data, ok := userInfo["data"].(map[string]interface{}); ok {
+		if id, ok := data["userId"].(string); ok && id != "" {
+			userID = id
+		}
 		if name, ok := data["realName"].(string); ok && name != "" {
 			realName = name
 		}
+	}
+
+
+	if userID == "" {
+		slog.Error("qr-login: userId not found in userInfo response")
+		return nil, fmt.Errorf("无法从 JoyCode API 获取用户ID")
 	}
 
 	return &QRLoginResult{PtKey: ptKey, PtPin: ptPin, UserID: userID, RealName: realName}, nil

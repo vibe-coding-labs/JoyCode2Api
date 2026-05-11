@@ -70,11 +70,12 @@ const formatLatency = (ms: number) => {
   return `${m}m${remainS > 0 ? ` ${remainS}s` : ''}`;
 };
 
-const getBaseURL = () => `http://${window.location.host}`;
+const getBaseURL = () => `${window.location.protocol}//${window.location.host}`;
 
 const buildClaudeCodeCmd = (apiKey: string, model = 'GLM-5.1') => [
   `API_TIMEOUT_MS=6000000 \\`,
   `CLAUDE_CODE_MAX_RETRIES=3 \\`,
+  `NODE_TLS_REJECT_UNAUTHORIZED=0 \\`,
   `ANTHROPIC_BASE_URL=${getBaseURL()} \\`,
   `ANTHROPIC_API_KEY="${apiKey}" \\`,
   `CLAUDE_CODE_MAX_OUTPUT_TOKENS=6553655 \\`,

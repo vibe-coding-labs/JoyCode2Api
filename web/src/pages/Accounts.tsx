@@ -45,7 +45,7 @@ const BUILTIN_MODELS = [
   { label: 'Doubao-Seed-2.0-pro', value: 'Doubao-Seed-2.0-pro' },
 ];
 
-const getBaseURL = () => `http://${window.location.host}`;
+const getBaseURL = () => `${window.location.protocol}//${window.location.host}`;
 
 const maskUserId = (id: string): string => {
   if (!id) return '-';
@@ -62,6 +62,7 @@ const fmtTokens = (n: number): string => {
 const claudeCodeCmd = (apiKey: string, model = 'GLM-5.1') => [
   `API_TIMEOUT_MS=6000000 \\`,
   `CLAUDE_CODE_MAX_RETRIES=1000000 \\`,
+  `NODE_TLS_REJECT_UNAUTHORIZED=0 \\`,
   `ANTHROPIC_BASE_URL=${getBaseURL()} \\`,
   `ANTHROPIC_API_KEY="${apiKey}" \\`,
   `CLAUDE_CODE_MAX_OUTPUT_TOKENS=6553655 \\`,

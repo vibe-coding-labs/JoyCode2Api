@@ -247,7 +247,8 @@ func (s *Store) migrate() error {
 			created_at TEXT DEFAULT (datetime('now', 'localtime')),
 			updated_at TEXT DEFAULT (datetime('now', 'localtime')),
 			credential_refreshed_at TEXT DEFAULT '',
-			credential_valid INTEGER DEFAULT -1
+			credential_valid INTEGER DEFAULT -1,
+			display_order INTEGER DEFAULT 0
 		);
 		CREATE TABLE IF NOT EXISTS settings (
 			key TEXT PRIMARY KEY,
@@ -321,7 +322,8 @@ func (s *Store) migrateUserIDAsPK() {
 			created_at TEXT DEFAULT (datetime('now', 'localtime')),
 			updated_at TEXT DEFAULT (datetime('now', 'localtime')),
 			credential_refreshed_at TEXT DEFAULT '',
-			credential_valid INTEGER DEFAULT -1
+			credential_valid INTEGER DEFAULT -1,
+			display_order INTEGER DEFAULT 0
 		)`)
 	if err != nil {
 		slog.Error("store: migrateUserIDAsPK create accounts_new failed", "error", err)
@@ -334,7 +336,7 @@ func (s *Store) migrateUserIDAsPK() {
 	//   api_token, pt_key, is_default, default_model, created_at, updated_at,
 	//   credential_refreshed_at, credential_valid carried over
 	_, err = s.db.Exec(`
-		INSERT INTO accounts_new (user_id, nickname, api_token, pt_key, is_default, default_model, created_at, updated_at, credential_refreshed_at, credential_valid)
+		INSERT INTO accounts_new (user_id, nickname, api_token, pt_key, is_default, default_model, created_at, updated_at, credential_refreshed_at, credential_valid, display_order)
 		SELECT
 			CASE WHEN user_id = '' OR user_id IS NULL THEN 'local_' || api_key ELSE user_id END,
 			api_key,
@@ -345,7 +347,8 @@ func (s *Store) migrateUserIDAsPK() {
 			created_at,
 			COALESCE(updated_at, created_at),
 			COALESCE(credential_refreshed_at, ''),
-			COALESCE(credential_valid, -1)
+			COALESCE(credential_valid, -1),
+			COALESCE(display_order, 0)
 		FROM accounts`)
 	if err != nil {
 		slog.Error("store: migrateUserIDAsPK copy data failed", "error", err)

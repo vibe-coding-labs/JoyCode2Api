@@ -3,14 +3,12 @@ package main
 import (
 	"bytes"
 	"context"
-	"crypto/tls"
 	"encoding/json"
 	"fmt"
 	"io"
 	"io/fs"
 	"log"
 	"log/slog"
-	"net"
 	"net/http"
 	"os"
 	"os/signal"
@@ -195,19 +193,19 @@ var serveCmd = &cobra.Command{
 			Handler: handler,
 		}
 
-		var tlsCfg *tls.Config
 		scheme := "http"
 		if serveTLS {
-			var err error
-			tlsCfg, err = ensureTLS()
+			tlsCfg, err := ensureTLS()
 			if err != nil {
 				log.Printf("Warning: TLS setup failed (%v), falling back to HTTP", err)
 			} else {
+				httpSrv.TLSConfig = tlsCfg
 				scheme = "https"
 			}
 		}
 
 		go func() {
+			log.Printf("JoyCode Proxy running on %s://%s", scheme, addr)
 			fmt.Println()
 			fmt.Printf("  JoyCode Proxy %s\n", Version)
 			fmt.Println("  ─────────────────────────────────────────────────")
@@ -221,11 +219,7 @@ var serveCmd = &cobra.Command{
 			fmt.Println("    GET  /health               — Health check")
 			fmt.Println()
 			fmt.Println("  Dashboard:")
-			if tlsCfg != nil {
-				fmt.Printf("    https://%s — Web UI (also accepts HTTP)\n", addr)
-			} else {
-				fmt.Printf("    http://%s — Web UI\n", addr)
-			}
+			fmt.Printf("    %s://%s — Web UI\n", scheme, addr)
 			fmt.Println()
 			fmt.Println("  Claude Code setup:")
 			fmt.Printf("    export ANTHROPIC_BASE_URL=http://%s\n", addr)
@@ -235,20 +229,10 @@ var serveCmd = &cobra.Command{
 				fmt.Println("  Verbose logging: enabled")
 			}
 			fmt.Println()
-
 			var listenErr error
-			if tlsCfg != nil {
-				// Single-port dual-protocol: peek first byte to auto-detect TLS vs HTTP
-				httpSrv.TLSConfig = tlsCfg
-				ln, err := net.Listen("tcp", addr)
-				if err != nil {
-					log.Fatalf("Listen error: %v", err)
-				}
-				dualLn := newDualListener(ln, tlsCfg, handler)
-				log.Printf("JoyCode Proxy running on %s://%s (also accepts HTTP)", scheme, addr)
-				listenErr = httpSrv.Serve(dualLn)
+			if httpSrv.TLSConfig != nil {
+				listenErr = httpSrv.ListenAndServeTLS("", "")
 			} else {
-				log.Printf("JoyCode Proxy running on %s://%s", scheme, addr)
 				listenErr = httpSrv.ListenAndServe()
 			}
 			if listenErr != nil && listenErr != http.ErrServerClosed {

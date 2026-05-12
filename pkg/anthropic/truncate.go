@@ -64,6 +64,48 @@ func PreemptiveTruncate(req *MessageRequest) int {
 	return rounds
 }
 
+// findToolPairBoundary adjusts cutEnd backward if it would split a tool_use/tool_result pair.
+func findToolPairBoundary(messages []MessageParam, cutEnd int) int {
+	if cutEnd <= 1 || cutEnd >= len(messages) {
+		return cutEnd
+	}
+	prevRole := messages[cutEnd-1].Role
+	curRole := messages[cutEnd].Role
+
+	// If we're splitting between assistant(tool_use) and user(tool_result), include both
+	if prevRole == "assistant" && curRole == "user" {
+		var blocks []contentBlock
+		if json.Unmarshal(messages[cutEnd-1].Content, &blocks) == nil {
+			for _, b := range blocks {
+				if b.Type == "tool_use" {
+					if cutEnd-1 >= 1 {
+						return cutEnd - 1
+					}
+					if cutEnd+2 < len(messages) {
+						return cutEnd + 2
+					}
+				}
+			}
+		}
+	}
+
+	// Skip orphaned tool_result whose tool_use was removed
+	if curRole == "user" {
+		var blocks []contentBlock
+		if json.Unmarshal(messages[cutEnd].Content, &blocks) == nil {
+			for _, b := range blocks {
+				if b.Type == "tool_result" {
+					if cutEnd+1 < len(messages) {
+						return cutEnd + 1
+					}
+				}
+			}
+		}
+	}
+
+	return cutEnd
+}
+
 // truncateMessages removes the oldest messages from the middle of the
 // conversation, keeping the first message + a truncation notice + the last
 // portion of messages. Each call removes ~40% of remaining messages.
@@ -94,6 +136,12 @@ func truncateMessages(req *MessageRequest) bool {
 	if cutEnd%2 != 0 {
 		cutEnd++
 	}
+	if cutEnd >= n {
+		return false
+	}
+
+	// Adjust cutEnd to avoid splitting tool_use/tool_result pairs
+	cutEnd = findToolPairBoundary(req.Messages, cutEnd)
 	if cutEnd >= n {
 		return false
 	}

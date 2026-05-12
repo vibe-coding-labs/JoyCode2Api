@@ -400,6 +400,8 @@ func (h *Handler) handleStream(w http.ResponseWriter, r *http.Request, req *Mess
 				stopReason = "max_tokens"
 			case "stop":
 				stopReason = "end_turn"
+				case "content_filter":
+					stopReason = "end_turn"
 			}
 			FormatSSE(w, "message_delta", sseMessageDelta{
 				Type:  "message_delta",
@@ -434,14 +436,30 @@ func (h *Handler) handleStream(w http.ResponseWriter, r *http.Request, req *Mess
 		}
 		for i := 0; i < len(toolCalls); i++ {
 			if toolBlockStarted[i] {
+				args := toolCalls[i].Arguments
+				if args == "" {
+					args = "{}"
+				}
+				if !json.Valid([]byte(args)) {
+					args = fixPartialJSON(args)
+				}
+				FormatSSE(w, "content_block_delta", sseContentBlockDelta{
+					Type:  "content_block_delta",
+					Index: toolBlockToIdx[i],
+					Delta: deltaText{Type: "input_json_delta", PartialJSON: args},
+				})
 				FormatSSE(w, "content_block_stop", sseContentBlockStop{
 					Type: "content_block_stop", Index: toolBlockToIdx[i],
 				})
 			}
 		}
+		errorStopReason := "end_turn"
+		if len(toolBlockStarted) > 0 {
+			errorStopReason = "tool_use"
+		}
 		FormatSSE(w, "message_delta", sseMessageDelta{
 			Type:  "message_delta",
-			Delta: deltaStop{StopReason: "end_turn"},
+			Delta: deltaStop{StopReason: errorStopReason},
 			Usage: struct {
 				OutputTokens int `json:"output_tokens"`
 			}{OutputTokens: totalOutput / 4},
@@ -452,6 +470,57 @@ func (h *Handler) handleStream(w http.ResponseWriter, r *http.Request, req *Mess
 	if streamInTk > 0 || streamOutTk > 0 {
 		store.SetTokenUsage(r, streamInTk, streamOutTk)
 	}
+}
+
+// fixPartialJSON attempts to close unclosed JSON objects/arrays in truncated tool arguments.
+func fixPartialJSON(s string) string {
+	s = strings.TrimSpace(s)
+	if s == "" {
+		return "{}"
+	}
+	objDepth := 0
+	arrDepth := 0
+	inStr := false
+	escape := false
+	for _, ch := range s {
+		if escape {
+			escape = false
+			continue
+		}
+		if ch == '\\' && inStr {
+			escape = true
+			continue
+		}
+		if ch == '"' {
+			inStr = !inStr
+			continue
+		}
+		if inStr {
+			continue
+		}
+		switch ch {
+		case '{':
+			objDepth++
+		case '}':
+			objDepth--
+		case '[':
+			arrDepth++
+		case ']':
+			arrDepth--
+		}
+	}
+	if inStr {
+		s += "\""
+	}
+	for arrDepth > 0 {
+		s += "]"
+		arrDepth--
+	}
+	for objDepth > 0 {
+		s += "}"
+		objDepth--
+	}
+	return s
 }
 
 // connectStreamWithRetry attempts to connect to upstream with retries.

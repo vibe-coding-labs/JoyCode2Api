@@ -14,6 +14,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"strings"
 	"sync/atomic"
 	"syscall"
@@ -25,6 +26,7 @@ import (
 	"github.com/vibe-coding-labs/JoyCodeProxy/pkg/dashboard"
 	"github.com/vibe-coding-labs/JoyCodeProxy/pkg/joycode"
 	"github.com/vibe-coding-labs/JoyCodeProxy/pkg/keepalive"
+	"github.com/vibe-coding-labs/JoyCodeProxy/pkg/logrot"
 	"github.com/vibe-coding-labs/JoyCodeProxy/pkg/openai"
 	"github.com/vibe-coding-labs/JoyCodeProxy/pkg/proxy"
 	"github.com/vibe-coding-labs/JoyCodeProxy/pkg/store"
@@ -57,6 +59,8 @@ var serveCmd = &cobra.Command{
 		if os.Getenv("_JOYCODE_DAEMON_CHILD") == "1" {
 			runAsDaemonChild()
 		}
+
+		setupLogRotation()
 
 		client, err := resolveClient()
 		if err != nil {
@@ -426,4 +430,28 @@ func (rw *responseWriter) Flush() {
 	if f, ok := rw.ResponseWriter.(http.Flusher); ok {
 		f.Flush()
 	}
+}
+
+// setupLogRotation initializes rotating log writers for slog and log.
+// Also truncates stdout.log if launchd has let it grow too large.
+func setupLogRotation() {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return
+	}
+	logDir := filepath.Join(home, logDir)
+
+	cfg := logrot.DefaultConfig(logDir, "stderr")
+	rw, err := logrot.New(cfg)
+	if err != nil {
+		log.Printf("Warning: log rotation init failed: %v", err)
+		return
+	}
+
+	slog.SetDefault(slog.New(slog.NewTextHandler(rw, &slog.HandlerOptions{Level: slog.LevelInfo})))
+	log.SetOutput(rw)
+
+	// Truncate stdout.log if launchd has let it grow too large
+	stdoutPath := filepath.Join(logDir, "stdout.log")
+	logrot.TruncateFileIfNeeded(stdoutPath, cfg.MaxFileSize)
 }

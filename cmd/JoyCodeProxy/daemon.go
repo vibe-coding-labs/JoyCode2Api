@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log"
+	"log/slog"
 	"os"
 	"os/exec"
 	"os/signal"
@@ -14,6 +15,7 @@ import (
 	"time"
 
 	"github.com/spf13/cobra"
+	"github.com/vibe-coding-labs/JoyCodeProxy/pkg/logrot"
 )
 
 const (
@@ -249,28 +251,32 @@ func tailDaemonLogs(n int) error {
 	return nil
 }
 
-// runAsDaemonChild redirects logs to daemon log file.
+// runAsDaemonChild redirects logs to daemon log file with rotation.
 func runAsDaemonChild() {
-	logFile, err := os.OpenFile(daemonLogFile, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0644)
+	home, _ := os.UserHomeDir()
+	logDir := filepath.Join(home, logDir)
+	cfg := logrot.DefaultConfig(logDir, "daemon")
+	rw, err := logrot.New(cfg)
 	if err != nil {
 		log.Fatalf("[daemon] cannot open log file: %v", err)
 	}
-	log.SetOutput(logFile)
+	log.SetOutput(rw)
+	slog.SetDefault(slog.New(slog.NewTextHandler(rw, &slog.HandlerOptions{Level: slog.LevelInfo})))
 	log.Printf("[daemon] child process started (PID %d)", os.Getpid())
 }
 
 // RunSupervisor starts a supervisor loop that spawns and monitors the child process.
 func RunSupervisor(port int) {
 	home, _ := os.UserHomeDir()
-	logPath := filepath.Join(home, logFileName)
-	os.MkdirAll(filepath.Dir(logPath), 0755)
-
-	logFile, err := os.OpenFile(logPath, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0644)
+	logDir := filepath.Join(home, logDir)
+	cfg := logrot.DefaultConfig(logDir, "daemon")
+	rw, err := logrot.New(cfg)
 	if err != nil {
 		log.Fatalf("[supervisor] cannot open log: %v", err)
 	}
-	defer logFile.Close()
-	log.SetOutput(logFile)
+	defer rw.Close()
+	log.SetOutput(rw)
+	slog.SetDefault(slog.New(slog.NewTextHandler(rw, &slog.HandlerOptions{Level: slog.LevelInfo})))
 
 	log.Printf("[supervisor] starting (PID %d, port %d)", os.Getpid(), port)
 
@@ -302,8 +308,8 @@ func RunSupervisor(port int) {
 
 		cmd := exec.Command(binPath, args...)
 		cmd.Env = append(os.Environ(), daemonChildEnv+"=1")
-		cmd.Stdout = logFile
-		cmd.Stderr = logFile
+		cmd.Stdout = rw
+		cmd.Stderr = rw
 		cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
 
 		log.Printf("[supervisor] spawning child process")

@@ -1325,6 +1325,78 @@ func EnsureDataDir() (string, error) {
 	return dir, nil
 }
 
+// ExportAccountItem is the format for account export/import.
+type ExportAccountItem struct {
+	UserID       string `json:"user_id"`
+	Nickname     string `json:"nickname"`
+	Remark       string `json:"remark"`
+	PtKey        string `json:"pt_key"`
+	IsDefault    bool   `json:"is_default"`
+	DefaultModel string `json:"default_model"`
+	DisplayOrder int    `json:"display_order"`
+}
+
+// ExportAccounts returns all accounts with decrypted pt_keys for export.
+func (s *Store) ExportAccounts() ([]ExportAccountItem, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	rows, err := s.db.Query(
+		"SELECT user_id, nickname, remark, pt_key, is_default, default_model, COALESCE(display_order, 0) FROM accounts ORDER BY display_order, created_at",
+	)
+	if err != nil {
+		return nil, fmt.Errorf("query accounts for export: %w", err)
+	}
+	defer rows.Close()
+
+	var items []ExportAccountItem
+	for rows.Next() {
+		var item ExportAccountItem
+		var encPtKey string
+		var isDef int
+		if err := rows.Scan(&item.UserID, &item.Nickname, &item.Remark, &encPtKey, &isDef, &item.DefaultModel, &item.DisplayOrder); err != nil {
+			return nil, fmt.Errorf("scan account for export: %w", err)
+		}
+		ptKey, err := s.decrypt(encPtKey)
+		if err != nil {
+			slog.Warn("store: skip account in export, decrypt failed", "user_id", item.UserID, "error", err)
+			continue
+		}
+		item.PtKey = ptKey
+		item.IsDefault = isDef == 1
+		items = append(items, item)
+	}
+	if items == nil {
+		items = []ExportAccountItem{}
+	}
+	return items, nil
+}
+
+// ImportAccounts imports accounts from export data. Existing accounts are updated (pt_key only).
+func (s *Store) ImportAccounts(items []ExportAccountItem) (added int, updated int, err error) {
+	for _, item := range items {
+		if item.UserID == "" || item.PtKey == "" {
+			continue
+		}
+		var existing int
+		s.mu.Lock()
+		e := s.db.QueryRow("SELECT COUNT(*) FROM accounts WHERE user_id = ?", item.UserID).Scan(&existing)
+		s.mu.Unlock()
+		if e != nil {
+			return added, updated, fmt.Errorf("check existing account %s: %w", item.UserID, e)
+		}
+		if err := s.AddAccount(item.UserID, item.PtKey, item.Nickname, item.IsDefault, item.DefaultModel); err != nil {
+			return added, updated, fmt.Errorf("import account %s: %w", item.UserID, err)
+		}
+		if existing > 0 {
+			updated++
+		} else {
+			added++
+		}
+	}
+	return added, updated, nil
+}
+
 // Copy from os.ReadFile pattern -- used to check if DB exists.
 func DBExists() bool {
 	path, err := DefaultDBPath()

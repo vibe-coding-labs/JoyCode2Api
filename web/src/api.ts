@@ -221,4 +221,8 @@ export const api = {
     request<{ ok: boolean }>(`/api/accounts/${encodeURIComponent(userId)}/remark`, { method: 'PUT', body: JSON.stringify({ remark }) }),
   reorderAccounts: (userIds: string[]) =>
     request<{ ok: boolean }>('/api/accounts/reorder', { method: 'PUT', body: JSON.stringify({ user_ids: userIds }) }),
+  exportAccounts: () =>
+    request<{ ok: boolean; accounts: Array<{ user_id: string; nickname: string; remark: string; pt_key: string; is_default: boolean; default_model: string; display_order: number }>; count: number }>('/api/accounts-export'),
+  importAccounts: (accounts: Array<{ user_id: string; nickname: string; remark: string; pt_key: string; is_default: boolean; default_model: string; display_order: number }>) =>
+    request<{ ok: boolean; added: number; updated: number; total: number }>('/api/accounts-import', { method: 'POST', body: JSON.stringify({ accounts }) }),
 };

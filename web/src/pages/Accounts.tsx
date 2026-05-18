@@ -8,7 +8,7 @@ import {
   SafetyCertificateOutlined, ReloadOutlined,
   QuestionCircleOutlined, ClearOutlined, EditOutlined,
   CheckCircleOutlined, CloseCircleOutlined, ClockCircleOutlined,
-  HolderOutlined,
+  HolderOutlined, ExportOutlined, UploadOutlined,
 } from '@ant-design/icons';
 import {
   DndContext,
@@ -143,6 +143,8 @@ const Accounts: React.FC = () => {
   const [renameModalOpen, setRenameModalOpen] = useState(false);
   const [renameTarget, setRenameTarget] = useState<string>('');
   const [renameForm] = Form.useForm();
+  const fileInputRef = React.useRef<HTMLInputElement>(null);
+  const [importing, setImporting] = useState(false);
 
   const sensors = useSensors(
     useSensor(PointerSensor, { activationConstraint: { distance: 5 } }),
@@ -498,6 +500,64 @@ const Accounts: React.FC = () => {
               清空本地JoyCode会话
             </Button>
           </Popconfirm>
+          <Button
+            onClick={async () => {
+              try {
+                const result = await api.exportAccounts();
+                if (!result.accounts || result.accounts.length === 0) {
+                  message.warning('没有可导出的账号');
+                  return;
+                }
+                const blob = new Blob([JSON.stringify(result.accounts, null, 2)], { type: 'application/json' });
+                const url = URL.createObjectURL(blob);
+                const a = document.createElement('a');
+                a.href = url;
+                a.download = `joycode-accounts-${new Date().toISOString().slice(0, 10)}.json`;
+                a.click();
+                URL.revokeObjectURL(url);
+                message.success(`已导出 ${result.count} 个账号`);
+              } catch (e: unknown) {
+                message.error(e instanceof Error ? e.message : '导出失败');
+              }
+            }}
+            icon={<ExportOutlined />}
+          >
+            导出账号
+          </Button>
+          <Button
+            onClick={() => fileInputRef.current?.click()}
+            icon={<UploadOutlined />}
+            loading={importing}
+          >
+            导入账号
+          </Button>
+          <input
+            ref={fileInputRef}
+            type="file"
+            accept=".json"
+            style={{ display: 'none' }}
+            onChange={async (e) => {
+              const file = e.target.files?.[0];
+              if (!file) return;
+              setImporting(true);
+              try {
+                const text = await file.text();
+                const accounts = JSON.parse(text);
+                if (!Array.isArray(accounts) || accounts.length === 0) {
+                  message.error('文件格式错误：应为非空 JSON 数组');
+                  return;
+                }
+                const result = await api.importAccounts(accounts);
+                message.success(`导入完成：新增 ${result.added} 个，更新 ${result.updated} 个`);
+                fetchAccounts();
+              } catch (err: unknown) {
+                message.error(err instanceof Error ? err.message : '导入失败');
+              } finally {
+                setImporting(false);
+                e.target.value = '';
+              }
+            }}
+          />
           <Button onClick={() => setModalOpen(true)} icon={<PlusOutlined />}>
             手动添加
           </Button>

@@ -67,6 +67,8 @@ func (h *Handler) RegisterRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("/api/health", h.handleHealth)
 	mux.HandleFunc("/api/errors", h.handleErrors)
 	mux.HandleFunc("/api/github-stars", h.handleGitHubStars)
+	mux.HandleFunc("/api/accounts-export", h.handleExportAccounts)
+	mux.HandleFunc("/api/accounts-import", h.handleImportAccounts)
 }
 
 // GitHub Stars cache
@@ -631,6 +633,69 @@ func (h *Handler) handleClearAllAccounts(w http.ResponseWriter, r *http.Request)
 	writeJSON(w, http.StatusOK, map[string]interface{}{
 		"ok":    true,
 		"count": n,
+	})
+}
+
+func (h *Handler) handleExportAccounts(w http.ResponseWriter, r *http.Request) {
+	setCors(w)
+	if r.Method == http.MethodOptions {
+		w.WriteHeader(http.StatusNoContent)
+		return
+	}
+	if r.Method != http.MethodGet {
+		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
+		return
+	}
+
+	items, err := h.store.ExportAccounts()
+	if err != nil {
+		slog.Error("export-accounts: failed", "error", err)
+		writeError(w, http.StatusInternalServerError, "导出账号失败: "+err.Error())
+		return
+	}
+
+	writeJSON(w, http.StatusOK, map[string]interface{}{
+		"ok":       true,
+		"accounts": items,
+		"count":    len(items),
+	})
+}
+
+func (h *Handler) handleImportAccounts(w http.ResponseWriter, r *http.Request) {
+	setCors(w)
+	if r.Method == http.MethodOptions {
+		w.WriteHeader(http.StatusNoContent)
+		return
+	}
+	if r.Method != http.MethodPost {
+		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
+		return
+	}
+
+	var body struct {
+		Accounts []store.ExportAccountItem `json:"accounts"`
+	}
+	if !readJSONBody(w, r, &body) {
+		return
+	}
+	if len(body.Accounts) == 0 {
+		writeError(w, http.StatusBadRequest, "accounts array is empty")
+		return
+	}
+
+	added, updated, err := h.store.ImportAccounts(body.Accounts)
+	if err != nil {
+		slog.Error("import-accounts: failed", "error", err)
+		writeError(w, http.StatusInternalServerError, "导入账号失败: "+err.Error())
+		return
+	}
+
+	slog.Info("import-accounts: completed", "added", added, "updated", updated)
+	writeJSON(w, http.StatusOK, map[string]interface{}{
+		"ok":      true,
+		"added":   added,
+		"updated": updated,
+		"total":   added + updated,
 	})
 }
 

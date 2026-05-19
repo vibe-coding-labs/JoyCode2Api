@@ -375,7 +375,7 @@ func requestLogMiddleware(next http.Handler, s *store.Store) http.Handler {
 			proxy.RecordSession(resolvedAccount.UserID, sessionID)
 		}
 
-		rw := &responseWriter{ResponseWriter: w, statusCode: 200}
+		rw := &responseWriter{ResponseWriter: w, statusCode: 200, bodyLimit: 64 << 10}
 		next.ServeHTTP(rw, r)
 
 		// Log /v1/ requests
@@ -406,6 +406,9 @@ func requestLogMiddleware(next http.Handler, s *store.Store) http.Handler {
 			if rw.statusCode >= 400 {
 				reqID := atomic.AddUint64(&requestCounter, 1)
 				errMsg = fmt.Sprintf("HTTP %d on %s %s", rw.statusCode, r.Method, path)
+				if body := strings.TrimSpace(rw.body.String()); body != "" {
+					errMsg = fmt.Sprintf("%s\n%s", errMsg, body)
+				}
 				slog.Error("proxy error response",
 					"request_id", reqID,
 					"status", rw.statusCode,
@@ -434,11 +437,25 @@ func requestLogMiddleware(next http.Handler, s *store.Store) http.Handler {
 type responseWriter struct {
 	http.ResponseWriter
 	statusCode int
+	body       bytes.Buffer
+	bodyLimit  int
 }
 
 func (rw *responseWriter) WriteHeader(code int) {
 	rw.statusCode = code
 	rw.ResponseWriter.WriteHeader(code)
+}
+
+func (rw *responseWriter) Write(p []byte) (int, error) {
+	if rw.bodyLimit > 0 && rw.body.Len() < rw.bodyLimit {
+		remaining := rw.bodyLimit - rw.body.Len()
+		if len(p) > remaining {
+			rw.body.Write(p[:remaining])
+		} else {
+			rw.body.Write(p)
+		}
+	}
+	return rw.ResponseWriter.Write(p)
 }
 
 func (rw *responseWriter) Flush() {

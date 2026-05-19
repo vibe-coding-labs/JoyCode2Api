@@ -726,16 +726,58 @@ const AccountDetail: React.FC = () => {
           rowKey="id"
           size="small"
           pagination={{ pageSize: 20, showSizeChanger: false, showTotal: (t) => `共 ${t} 条` }}
-          scroll={{ x: 900 }}
+          scroll={{ x: 980 }}
           locale={{ emptyText: '暂无请求记录' }}
           expandable={{
-            rowExpandable: (record) => record.status_code >= 400 && !!record.error_message,
             expandedRowRender: (record) => (
-              <div style={{ padding: '8px 0' }}>
-                <Typography.Text type="secondary" style={{ fontSize: 12 }}>错误详情：</Typography.Text>
-                <Typography.Text style={{ fontSize: 12, color: '#cf1322', fontFamily: 'monospace' }}>
-                  {record.error_message}
-                </Typography.Text>
+              <div style={{ padding: '8px 0 8px 12px' }}>
+                {record.status_code >= 400 && (
+                  <div style={{
+                    marginBottom: 10,
+                    padding: '10px 12px',
+                    border: '1px solid #ffccc7',
+                    borderRadius: 6,
+                    background: '#fff2f0',
+                  }}>
+                    <Typography.Text strong style={{ display: 'block', marginBottom: 6, color: '#cf1322' }}>
+                      错误详情
+                    </Typography.Text>
+                    <pre style={{
+                      margin: 0,
+                      whiteSpace: 'pre-wrap',
+                      wordBreak: 'break-word',
+                      fontSize: 12,
+                      lineHeight: 1.6,
+                      color: '#cf1322',
+                      fontFamily: 'monospace',
+                    }}>
+                      {record.error_message || `HTTP ${record.status_code}`}
+                    </pre>
+                  </div>
+                )}
+                <div style={{
+                  display: 'grid',
+                  gridTemplateColumns: '120px minmax(0, 1fr)',
+                  gap: '6px 12px',
+                  fontSize: 12,
+                }}>
+                  <Typography.Text type="secondary">请求 ID</Typography.Text>
+                  <Typography.Text code>{record.id}</Typography.Text>
+                  <Typography.Text type="secondary">时间</Typography.Text>
+                  <Typography.Text>{formatTime(record.created_at)}</Typography.Text>
+                  <Typography.Text type="secondary">端点</Typography.Text>
+                  <Typography.Text code>{record.endpoint}</Typography.Text>
+                  <Typography.Text type="secondary">模型</Typography.Text>
+                  <Typography.Text>{record.model || '-'}</Typography.Text>
+                  <Typography.Text type="secondary">流式</Typography.Text>
+                  <Typography.Text>{record.stream ? '是' : '否'}</Typography.Text>
+                  <Typography.Text type="secondary">状态</Typography.Text>
+                  <Typography.Text>{record.status_code}</Typography.Text>
+                  <Typography.Text type="secondary">输入 / 输出 Token</Typography.Text>
+                  <Typography.Text>{record.input_tokens || 0} / {record.output_tokens || 0}</Typography.Text>
+                  <Typography.Text type="secondary">延迟</Typography.Text>
+                  <Typography.Text>{formatLatency(record.latency_ms)}</Typography.Text>
+                </div>
               </div>
             ),
           }}

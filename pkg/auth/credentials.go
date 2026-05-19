@@ -24,10 +24,21 @@ type stateData struct {
 	} `json:"joyCoderUser"`
 }
 
+const (
+	stateDBEnv       = "JOYCODE_STATE_DB"
+	containerStateDB = "/root/.joycode-ide/state.vscdb"
+)
+
 // LoadFromSystem reads ptKey from local JoyCode state database (macOS).
 func LoadFromSystem() (*Credentials, error) {
+	if dbPath := os.Getenv(stateDBEnv); dbPath != "" {
+		return loadFromStateDB(dbPath)
+	}
+	if _, err := os.Stat(containerStateDB); err == nil {
+		return loadFromStateDB(containerStateDB)
+	}
 	if runtime.GOOS != "darwin" {
-		return nil, fmt.Errorf("auto credential extraction only supported on macOS; on other systems, please provide --ptkey and --userid flags")
+		return nil, fmt.Errorf("auto credential extraction requires macOS JoyCode IDE state; in Docker, mount state.vscdb to %s or set %s", containerStateDB, stateDBEnv)
 	}
 	home, err := os.UserHomeDir()
 	if err != nil {
@@ -39,6 +50,14 @@ func LoadFromSystem() (*Credentials, error) {
 
 	if _, err := os.Stat(dbPath); os.IsNotExist(err) {
 		return nil, fmt.Errorf("JoyCode state database not found at %s\n  Please install and log in to JoyCode IDE first", dbPath)
+	}
+
+	return loadFromStateDB(dbPath)
+}
+
+func loadFromStateDB(dbPath string) (*Credentials, error) {
+	if _, err := os.Stat(dbPath); err != nil {
+		return nil, fmt.Errorf("JoyCode state database not found at %s: %w", dbPath, err)
 	}
 
 	db, err := sql.Open("sqlite3", dbPath+"?mode=ro")

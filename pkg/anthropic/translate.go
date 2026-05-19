@@ -41,6 +41,60 @@ func TranslateRequest(req *MessageRequest, accountDefault string, systemDefault 
 	return body
 }
 
+// TranslateAnthropicRequest converts an Anthropic request to JoyCode's native
+// Anthropic endpoint body. Claude-family models reject the legacy OpenAI path.
+func TranslateAnthropicRequest(req *MessageRequest, accountDefault string, systemDefault string) map[string]interface{} {
+	model := resolveNativeAnthropicModel(req.Model, accountDefault, systemDefault)
+	body := map[string]interface{}{
+		"model":      model,
+		"messages":   req.Messages,
+		"stream":     true,
+		"max_tokens": req.MaxTokens,
+		"thinking":   map[string]string{"type": "disabled"},
+	}
+	if req.System != nil {
+		body["system"] = normalizeAnthropicSystem(req.System)
+	}
+	if len(req.StopSequences) > 0 {
+		body["stop_sequences"] = req.StopSequences
+	}
+	if len(req.Tools) > 0 {
+		body["tools"] = req.Tools
+	}
+	if len(req.ToolChoice) > 0 {
+		body["tool_choice"] = json.RawMessage(req.ToolChoice)
+	}
+	return body
+}
+
+func normalizeAnthropicSystem(raw json.RawMessage) interface{} {
+	var s string
+	if err := json.Unmarshal(raw, &s); err == nil {
+		return []map[string]interface{}{{"type": "text", "text": s}}
+	}
+	var blocks []map[string]interface{}
+	if err := json.Unmarshal(raw, &blocks); err == nil {
+		return blocks
+	}
+	return raw
+}
+
+func IsNativeAnthropicModel(model string) bool {
+	m := strings.ToLower(model)
+	return strings.HasPrefix(m, "claude") || strings.Contains(m, "claude-")
+}
+
+func resolveNativeAnthropicModel(model string, accountDefault string, systemDefault string) string {
+	resolved := resolveModel(model, accountDefault, systemDefault)
+	if resolved == "Claude-Opus-4.7" {
+		return resolved
+	}
+	if IsNativeAnthropicModel(resolved) {
+		return "Claude-Opus-4.7"
+	}
+	return resolved
+}
+
 // convertToolsToOpenAI converts Anthropic-format tools to OpenAI function-calling format.
 func convertToolsToOpenAI(tools []Tool) []interface{} {
 	result := make([]interface{}, 0, len(tools))

@@ -37,6 +37,7 @@ const FIELD_GROUPS = [
         type: 'select' as const,
         options: [
           { label: 'JoyAI-Code — 主力代码模型（推荐）', value: 'JoyAI-Code' },
+          { label: 'Claude-Opus-4.7', value: 'Claude-Opus-4.7' },
           { label: 'GLM-5.1 — 智谱 GLM 5.1', value: 'GLM-5.1' },
           { label: 'GLM-5 — 智谱 GLM 5', value: 'GLM-5' },
           { label: 'GLM-4.7 — 智谱 GLM 4.7', value: 'GLM-4.7' },

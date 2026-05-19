@@ -27,6 +27,7 @@ type ModelCapability struct {
 // ModelCapabilities maps model IDs to their capabilities.
 var ModelCapabilities = map[string]ModelCapability{
 	"JoyAI-Code":          {MaxTokens: 64000, Ctx: 200000},
+	"Claude-Opus-4.7":     {MaxTokens: 32000, Ctx: 200000},
 	"MiniMax-M2.7":        {Reasoning: true, MaxTokens: 16384, Ctx: 200000},
 	"Kimi-K2.5":           {Vision: true, MaxTokens: 16384, Ctx: 200000},
 	"Kimi-K2.6":           {Vision: true, Reasoning: true, MaxTokens: 16384, Ctx: 200000},

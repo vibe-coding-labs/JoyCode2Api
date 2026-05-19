@@ -15,6 +15,7 @@ import (
 
 const (
 	BaseURL       = "https://joycode-api.jd.com"
+	SaasBaseURL   = "http://joycode-api-saas.jd.com"
 	DefaultModel  = "JoyAI-Code"
 	ClientVersion = "2.4.5"
 	UserAgent     = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) " +
@@ -24,6 +25,7 @@ const (
 
 var Models = []string{
 	"JoyAI-Code",
+	"Claude-Opus-4.7",
 	"MiniMax-M2.7",
 	"Kimi-K2.6",
 	"Kimi-K2.5",
@@ -34,10 +36,26 @@ var Models = []string{
 }
 
 type Client struct {
-	PtKey      string
-	UserID     string
-	SessionID  string
-	httpClient *http.Client
+	PtKey          string
+	AnthropicPtKey string
+	UserID         string
+	SessionID      string
+	httpClient     *http.Client
+}
+
+type gzipReadCloser struct {
+	io.Reader
+	body io.Closer
+	gzip io.Closer
+}
+
+func (r *gzipReadCloser) Close() error {
+	gzipErr := r.gzip.Close()
+	bodyErr := r.body.Close()
+	if gzipErr != nil {
+		return gzipErr
+	}
+	return bodyErr
 }
 
 func NewClient(ptKey, userID string) *Client {
@@ -62,6 +80,10 @@ func (c *Client) SetTransport(transport http.RoundTripper) {
 	c.httpClient.Transport = transport
 }
 
+func (c *Client) SetAnthropicPtKey(ptKey string) {
+	c.AnthropicPtKey = ptKey
+}
+
 func newHexID() string {
 	b := make([]byte, 16)
 	rand.Read(b)
@@ -76,6 +98,23 @@ func (c *Client) headers() http.Header {
 		"User-Agent":      {UserAgent},
 		"Accept":          {"*/*"},
 		"Accept-Encoding": {"gzip, deflate, br"},
+		"Accept-Language": {"zh-CN,zh;q=0.9,en;q=0.8"},
+		"Connection":      {"keep-alive"},
+	}
+}
+
+func (c *Client) anthropicHeaders() http.Header {
+	ptKey := c.PtKey
+	if c.AnthropicPtKey != "" {
+		ptKey = c.AnthropicPtKey
+	}
+	return http.Header{
+		"Content-Type":    {"application/json; charset=utf-8"},
+		"ptKey":           {ptKey},
+		"loginType":       {"PIN_JD_CLOUD"},
+		"User-Agent":      {UserAgent},
+		"Accept":          {"*/*"},
+		"Accept-Encoding": {"gzip, deflate"},
 		"Accept-Language": {"zh-CN,zh;q=0.9,en;q=0.8"},
 		"Connection":      {"keep-alive"},
 	}
@@ -99,6 +138,21 @@ func (c *Client) prepareBody(extra map[string]interface{}) map[string]interface{
 	return body
 }
 
+func (c *Client) prepareAnthropicBody(extra map[string]interface{}) map[string]interface{} {
+	body := map[string]interface{}{
+		"tenant":        "JD",
+		"userId":        c.UserID,
+		"client":        "JoyCode",
+		"clientVersion": ClientVersion,
+		"language":      "UNKNOWN",
+		"stream":        true,
+	}
+	for k, v := range extra {
+		body[k] = v
+	}
+	return body
+}
+
 func (c *Client) doPost(endpoint string, body map[string]interface{}) (*http.Response, error) {
 	data, err := json.Marshal(body)
 	if err != nil {
@@ -114,6 +168,21 @@ func (c *Client) doPost(endpoint string, body map[string]interface{}) (*http.Res
 	return c.httpClient.Do(req)
 }
 
+func (c *Client) doAnthropicPost(endpoint string, body map[string]interface{}) (*http.Response, error) {
+	data, err := json.Marshal(body)
+	if err != nil {
+		slog.Error("marshal anthropic request body", "endpoint", endpoint, "error", err)
+		return nil, err
+	}
+	req, err := http.NewRequest("POST", SaasBaseURL+endpoint, bytes.NewReader(data))
+	if err != nil {
+		slog.Error("create anthropic request", "endpoint", endpoint, "error", err)
+		return nil, err
+	}
+	req.Header = c.anthropicHeaders()
+	return c.httpClient.Do(req)
+}
+
 func decodeBody(resp *http.Response) ([]byte, error) {
 	defer resp.Body.Close()
 	var r io.Reader = resp.Body
@@ -126,6 +195,19 @@ func decodeBody(resp *http.Response) ([]byte, error) {
 		r = gz
 	}
 	return io.ReadAll(r)
+}
+
+func decodeStreamBody(resp *http.Response) error {
+	if resp.Header.Get("Content-Encoding") != "gzip" {
+		return nil
+	}
+	gz, err := gzip.NewReader(resp.Body)
+	if err != nil {
+		return err
+	}
+	resp.Body = &gzipReadCloser{Reader: gz, body: resp.Body, gzip: gz}
+	resp.Header.Del("Content-Encoding")
+	return nil
 }
 
 func (c *Client) Post(endpoint string, body map[string]interface{}) (map[string]interface{}, error) {
@@ -162,6 +244,29 @@ func (c *Client) PostStream(endpoint string, body map[string]interface{}) (*http
 		data, _ := io.ReadAll(resp.Body)
 		slog.Error("upstream stream non-200", "endpoint", endpoint, "status", resp.StatusCode, "body", truncate(string(data), 500))
 		return nil, fmt.Errorf("API error %d: %s", resp.StatusCode, string(data))
+	}
+	if err := decodeStreamBody(resp); err != nil {
+		resp.Body.Close()
+		return nil, err
+	}
+	return resp, nil
+}
+
+func (c *Client) PostAnthropicStream(endpoint string, body map[string]interface{}) (*http.Response, error) {
+	resp, err := c.doAnthropicPost(endpoint, c.prepareAnthropicBody(body))
+	if err != nil {
+		slog.Error("upstream anthropic stream connect", "endpoint", endpoint, "error", err)
+		return nil, err
+	}
+	if resp.StatusCode != 200 {
+		defer resp.Body.Close()
+		data, _ := io.ReadAll(resp.Body)
+		slog.Error("upstream anthropic stream non-200", "endpoint", endpoint, "status", resp.StatusCode, "body", truncate(string(data), 500))
+		return nil, fmt.Errorf("API error %d: %s", resp.StatusCode, string(data))
+	}
+	if err := decodeStreamBody(resp); err != nil {
+		resp.Body.Close()
+		return nil, err
 	}
 	return resp, nil
 }

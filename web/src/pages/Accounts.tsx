@@ -36,6 +36,7 @@ import type { Account } from '../api';
 
 const BUILTIN_MODELS = [
   { label: 'JoyAI-Code（推荐）', value: 'JoyAI-Code' },
+  { label: 'Claude-Opus-4.7', value: 'Claude-Opus-4.7' },
   { label: 'GLM-5.1', value: 'GLM-5.1' },
   { label: 'GLM-5', value: 'GLM-5' },
   { label: 'GLM-4.7', value: 'GLM-4.7' },
@@ -44,6 +45,17 @@ const BUILTIN_MODELS = [
   { label: 'MiniMax-M2.7', value: 'MiniMax-M2.7' },
   { label: 'Doubao-Seed-2.0-pro', value: 'Doubao-Seed-2.0-pro' },
 ];
+
+const isClaudeModel = (model?: string) => model === 'Claude-Opus-4.7';
+
+const claudeDockerHint = [
+  `docker run -d \\`,
+  `  --name joycode-proxy \\`,
+  `  -p 34891:34891 \\`,
+  `  -v "$HOME/.joycode-proxy:/root/.joycode-proxy" \\`,
+  `  -v "$HOME/Library/Application Support/JoyCode/User/globalStorage/state.vscdb:/root/.joycode-ide/state.vscdb:ro" \\`,
+  `  joycode-proxy --skip-validation serve`,
+].join('\n');
 
 const getBaseURL = () => `${window.location.protocol}//${window.location.host}`;
 
@@ -145,6 +157,7 @@ const Accounts: React.FC = () => {
   const [renameForm] = Form.useForm();
   const fileInputRef = React.useRef<HTMLInputElement>(null);
   const [importing, setImporting] = useState(false);
+  const selectedModel = Form.useWatch('default_model', form);
 
   const sensors = useSensors(
     useSensor(PointerSensor, { activationConstraint: { distance: 5 } }),
@@ -613,23 +626,37 @@ const Accounts: React.FC = () => {
           type="info"
           showIcon
           message="手动添加账号"
-          description="填写 JoyCode 客户端凭证信息。推荐使用「一键导入」自动导入本地已登录账户，此处适合手动配置多个账号。"
+          description="普通模型使用网页 OAuth 登录得到的账号凭证。选择 Claude 模型时，服务端还需要读取本机 JoyCode IDE 登录状态中的短 ptKey。"
           style={{ marginBottom: 16 }}
         />
+        {isClaudeModel(selectedModel) && (
+          <Alert
+            type="warning"
+            showIcon
+            message="Claude 模型需要 JoyCode IDE 已登录"
+            description={(
+              <div>
+                <div>请先在本机 JoyCode IDE 客户端完成登录。Docker 启动时还需要挂载 JoyCode IDE 的本地状态文件，代理会从该文件自动读取 Claude 所需的短 ptKey。</div>
+                <pre style={{ margin: '8px 0 0', whiteSpace: 'pre-wrap', fontSize: 12 }}>{claudeDockerHint}</pre>
+              </div>
+            )}
+            style={{ marginBottom: 16 }}
+          />
+        )}
         <Form form={form} layout="vertical" onFinish={handleAdd}>
           <Form.Item
             name="pt_key"
             label={
               <Space size={4}>
                 JoyCode ptKey 凭证
-                <Tooltip title="从 JoyCode 客户端获取的 ptKey，用于后端 API 认证。获取方式：打开 JoyCode 桌面客户端 → 设置 → 开发者 → 复制 ptKey。凭证将以加密形式存储在本地数据库中">
+                <Tooltip title="普通模型使用网页 OAuth 登录得到的长 ptKey。Claude 模型还会从本机 JoyCode IDE 状态文件读取短 ptKey，不会覆盖这里保存的普通账号凭证。">
                   <QuestionCircleOutlined style={{ color: '#999' }} />
                 </Tooltip>
               </Space>
             }
             rules={[{ required: true, message: '请输入 ptKey' }]}
           >
-            <Input.Password placeholder="粘贴从 JoyCode 客户端复制的 ptKey，例如：eyJhbGci..." />
+            <Input.Password placeholder="粘贴网页 OAuth 或 JoyCode 普通接口可用的 ptKey" />
           </Form.Item>
           <Form.Item
             name="user_id"
@@ -650,7 +677,7 @@ const Accounts: React.FC = () => {
             label={
               <Space size={4}>
                 默认模型
-                <Tooltip title="此账号使用的默认模型。留空则使用系统全局默认模型。添加账号后，可在账号列表中实时获取该账号支持的全部模型">
+                <Tooltip title="选择 Claude-Opus-4.7 时，请确保本机 JoyCode IDE 已登录，并按提示挂载 state.vscdb。非 Claude 模型继续使用网页 OAuth 凭证。">
                   <QuestionCircleOutlined style={{ color: '#999' }} />
                 </Tooltip>
               </Space>

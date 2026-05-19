@@ -123,6 +123,12 @@ var serveCmd = &cobra.Command{
 			}()
 
 			resolver := func(r *http.Request) *joycode.Client {
+				systemClient := client
+				if systemClient != nil && systemClient.PtKey == "placeholder" {
+					if creds, err := auth.LoadFromSystem(); err == nil {
+						systemClient = joycode.NewClient(creds.PtKey, creds.UserID)
+					}
+				}
 				apiKey := r.Header.Get("x-api-key")
 				if apiKey == "" {
 					auth := r.Header.Get("Authorization")
@@ -137,22 +143,31 @@ var serveCmd = &cobra.Command{
 				if apiKey != "" {
 					if account, _ := s.GetAccountByToken(apiKey); account != nil {
 						cl := joycode.NewClient(account.PtKey, account.UserID)
+						if systemClient != nil && systemClient.PtKey != "" && systemClient.PtKey != "placeholder" && systemClient.UserID == account.UserID {
+							cl.SetAnthropicPtKey(systemClient.PtKey)
+						}
 						cl.SetTimeout(time.Duration(timeout) * time.Second)
 						return cl
 					}
 					if account, _ := s.GetAccount(apiKey); account != nil {
 						cl := joycode.NewClient(account.PtKey, account.UserID)
+						if systemClient != nil && systemClient.PtKey != "" && systemClient.PtKey != "placeholder" && systemClient.UserID == account.UserID {
+							cl.SetAnthropicPtKey(systemClient.PtKey)
+						}
 						cl.SetTimeout(time.Duration(timeout) * time.Second)
 						return cl
 					}
 				}
 				if account, _ := s.GetDefaultAccount(); account != nil {
 					cl := joycode.NewClient(account.PtKey, account.UserID)
+					if systemClient != nil && systemClient.PtKey != "" && systemClient.PtKey != "placeholder" && systemClient.UserID == account.UserID {
+						cl.SetAnthropicPtKey(systemClient.PtKey)
+					}
 					cl.SetTimeout(time.Duration(timeout) * time.Second)
 					cl.SetTransport(sharedTransport)
 					return cl
 				}
-				return client
+				return systemClient
 			}
 			srv.Resolver = resolver
 			anth.Resolver = resolver

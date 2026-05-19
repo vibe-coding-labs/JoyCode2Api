@@ -1,6 +1,6 @@
 import React, { useEffect, useState } from 'react';
 import {
-  Card, Row, Col, Statistic, Typography, Spin, Tag, Select, Button,
+  Alert, Card, Row, Col, Statistic, Typography, Spin, Tag, Select, Button,
   message, Space, Table, Badge, Segmented, Popconfirm, Tooltip, Divider,
 } from 'antd';
 import {
@@ -23,6 +23,7 @@ import CommandTooltip from '../components/CommandTooltip';
 
 const BUILTIN_MODELS = [
   { label: 'JoyAI-Code（推荐）', value: 'JoyAI-Code' },
+  { label: 'Claude-Opus-4.7', value: 'Claude-Opus-4.7' },
   { label: 'GLM-5.1', value: 'GLM-5.1' },
   { label: 'GLM-5', value: 'GLM-5' },
   { label: 'GLM-4.7', value: 'GLM-4.7' },
@@ -31,6 +32,8 @@ const BUILTIN_MODELS = [
   { label: 'MiniMax-M2.7', value: 'MiniMax-M2.7' },
   { label: 'Doubao-Seed-2.0-pro', value: 'Doubao-Seed-2.0-pro' },
 ];
+
+const isClaudeModel = (model?: string) => model === 'Claude-Opus-4.7';
 
 const PIE_COLORS = ['#00b578', '#36cfc9', '#73d13d', '#95de64', '#1890ff', '#13c2c2', '#eb2f96', '#fa8c16'];
 
@@ -340,6 +343,11 @@ const AccountDetail: React.FC = () => {
             disabled={savingModel}
             size="small"
           />
+          {isClaudeModel(account.default_model) && (
+            <Tooltip title="Claude 模型需要本机登录 JoyCode IDE">
+              <InfoCircleOutlined style={{ color: '#faad14' }} />
+            </Tooltip>
+          )}
           <Button size="small" onClick={async () => {
             try {
               await api.renewToken(decodedKey);
@@ -373,6 +381,15 @@ const AccountDetail: React.FC = () => {
       </div>
 
       {/* Quick start commands */}
+      {isClaudeModel(account.default_model) && (
+        <Alert
+          type="warning"
+          showIcon
+          message="Claude 模型需要 JoyCode IDE 登录态"
+          description="请确保本机 JoyCode IDE 已登录，否则 Claude 模型无法使用。"
+          style={{ marginBottom: 16 }}
+        />
+      )}
       <Card size="small" style={{ marginBottom: 16 }}>
         <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 10 }}>
           <Typography.Text strong style={{ fontSize: 13 }}>

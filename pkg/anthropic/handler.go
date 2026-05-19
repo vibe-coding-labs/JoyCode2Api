@@ -15,6 +15,7 @@ import (
 )
 
 const chatEndpoint = "/api/saas/openai/v1/chat/completions"
+const anthropicEndpoint = "/api/saas/anthropic/v1/messages"
 
 // ClientResolver returns the appropriate joycode.Client for a request.
 type ClientResolver func(r *http.Request) *joycode.Client
@@ -95,6 +96,10 @@ func (h *Handler) handleNonStream(w http.ResponseWriter, r *http.Request, req *M
 	systemDefault := ""
 	if h.store != nil {
 		systemDefault = h.store.GetSetting("default_model")
+	}
+	if IsNativeAnthropicModel(req.Model) || IsNativeAnthropicModel(resolveModel(req.Model, store.GetAccountDefaultModel(r), systemDefault)) {
+		h.handleNativeAnthropicNonStream(w, r, req, client, systemDefault)
+		return
 	}
 	// Preemptive truncation: estimate tokens and truncate before sending
 	if rounds := PreemptiveTruncate(req); rounds < 0 {
@@ -187,6 +192,10 @@ func (h *Handler) handleStream(w http.ResponseWriter, r *http.Request, req *Mess
 	flusher, ok := w.(http.Flusher)
 	if !ok {
 		writeAnthropicError(w, 500, "streaming not supported")
+		return
+	}
+	if IsNativeAnthropicModel(req.Model) || IsNativeAnthropicModel(resolveModel(req.Model, store.GetAccountDefaultModel(r), systemDefault)) {
+		h.handleNativeAnthropicStream(w, r, req, client, flusher, systemDefault)
 		return
 	}
 
@@ -469,6 +478,301 @@ func (h *Handler) handleStream(w http.ResponseWriter, r *http.Request, req *Mess
 	}
 	if streamInTk > 0 || streamOutTk > 0 {
 		store.SetTokenUsage(r, streamInTk, streamOutTk)
+	}
+}
+
+func (h *Handler) handleNativeAnthropicStream(w http.ResponseWriter, r *http.Request, req *MessageRequest, client *joycode.Client, flusher http.Flusher, systemDefault string) {
+	body := TranslateAnthropicRequest(req, store.GetAccountDefaultModel(r), systemDefault)
+	logRequestDetails(r, "translated native anthropic request (stream)", body)
+
+	resp, err := h.connectNativeAnthropicStreamWithRetry(r, body, client)
+	if err != nil {
+		reqLog(r).Error("native anthropic stream failed after retries", "error", err)
+		writeAnthropicError(w, 500, err.Error())
+		return
+	}
+	defer resp.Body.Close()
+
+	w.Header().Set("Content-Type", "text/event-stream")
+	w.Header().Set("Cache-Control", "no-cache")
+	w.Header().Set("Connection", "keep-alive")
+	w.Header().Set("Access-Control-Allow-Origin", "*")
+	w.WriteHeader(200)
+
+	scanner := bufio.NewScanner(resp.Body)
+	scanner.Buffer(make([]byte, 0, 64*1024), 1024*1024)
+	var inTk, outTk int
+	pendingEvent := ""
+	for scanner.Scan() {
+		payload := unwrapNativeAnthropicSSE(scanner.Text())
+		if payload == "" {
+			continue
+		}
+		if strings.HasPrefix(payload, "event: ") {
+			pendingEvent = strings.TrimSpace(strings.TrimPrefix(payload, "event: "))
+			continue
+		}
+		if strings.HasPrefix(payload, "data: ") {
+			payload = strings.TrimSpace(strings.TrimPrefix(payload, "data: "))
+		}
+		if payload == "" {
+			continue
+		}
+		if payload == "[DONE]" {
+			fmt.Fprintln(w, "data: [DONE]")
+			fmt.Fprintln(w)
+			flusher.Flush()
+			continue
+		}
+		if !strings.HasPrefix(payload, "{") {
+			continue
+		}
+		eventName := pendingEvent
+		if eventName == "" {
+			eventName = nativeAnthropicEventType(payload)
+		}
+		if eventName != "" {
+			fmt.Fprintf(w, "event: %s\n", eventName)
+		}
+		fmt.Fprintf(w, "data: %s\n\n", payload)
+		updateNativeAnthropicUsage(payload, &inTk, &outTk)
+		pendingEvent = ""
+		flusher.Flush()
+	}
+	if err := scanner.Err(); err != nil {
+		reqLog(r).Error("native anthropic stream scanner error", "error", err)
+	}
+	if inTk > 0 || outTk > 0 {
+		store.SetTokenUsage(r, inTk, outTk)
+	}
+}
+
+func (h *Handler) handleNativeAnthropicNonStream(w http.ResponseWriter, r *http.Request, req *MessageRequest, client *joycode.Client, systemDefault string) {
+	body := TranslateAnthropicRequest(req, store.GetAccountDefaultModel(r), systemDefault)
+	logRequestDetails(r, "translated native anthropic request (non-stream)", body)
+
+	resp, err := h.connectNativeAnthropicStreamWithRetry(r, body, client)
+	if err != nil {
+		reqLog(r).Error("native anthropic non-stream failed after retries", "error", err)
+		writeAnthropicError(w, 500, err.Error())
+		return
+	}
+	defer resp.Body.Close()
+
+	scanner := bufio.NewScanner(resp.Body)
+	scanner.Buffer(make([]byte, 0, 64*1024), 1024*1024)
+	content := []ContentBlock{}
+	var current *ContentBlock
+	stopReason := "end_turn"
+	var inTk, outTk int
+
+	for scanner.Scan() {
+		payload := unwrapNativeAnthropicSSE(scanner.Text())
+		if payload == "" || strings.HasPrefix(payload, "event: ") {
+			continue
+		}
+		if strings.HasPrefix(payload, "data: ") {
+			payload = strings.TrimSpace(strings.TrimPrefix(payload, "data: "))
+		}
+		if payload == "" || payload == "[DONE]" || !strings.HasPrefix(payload, "{") {
+			continue
+		}
+		if isUpstreamError(payload) {
+			writeAnthropicError(w, 500, payload)
+			return
+		}
+		updateNativeAnthropicUsage(payload, &inTk, &outTk)
+
+		var event struct {
+			Type         string          `json:"type"`
+			ContentBlock ContentBlock    `json:"content_block"`
+			Delta        json.RawMessage `json:"delta"`
+		}
+		if err := json.Unmarshal([]byte(payload), &event); err != nil {
+			continue
+		}
+		switch event.Type {
+		case "content_block_start":
+			block := event.ContentBlock
+			current = &block
+		case "content_block_delta":
+			if current == nil {
+				block := ContentBlock{Type: "text"}
+				current = &block
+			}
+			var delta struct {
+				Type        string `json:"type"`
+				Text        string `json:"text"`
+				PartialJSON string `json:"partial_json"`
+			}
+			if err := json.Unmarshal(event.Delta, &delta); err != nil {
+				continue
+			}
+			switch delta.Type {
+			case "text_delta":
+				current.Type = "text"
+				current.Text += delta.Text
+			case "input_json_delta":
+				if current.Input == nil {
+					current.Input = map[string]interface{}{}
+				}
+				if delta.PartialJSON != "" {
+					var input interface{}
+					if err := json.Unmarshal([]byte(delta.PartialJSON), &input); err == nil {
+						current.Input = input
+					}
+				}
+			}
+		case "content_block_stop":
+			if current != nil {
+				content = append(content, *current)
+				current = nil
+			}
+		case "message_delta":
+			var delta struct {
+				StopReason string `json:"stop_reason"`
+			}
+			var wrapper struct {
+				Delta deltaStop `json:"delta"`
+			}
+			if err := json.Unmarshal([]byte(payload), &wrapper); err == nil && wrapper.Delta.StopReason != "" {
+				stopReason = wrapper.Delta.StopReason
+			} else if err := json.Unmarshal(event.Delta, &delta); err == nil && delta.StopReason != "" {
+				stopReason = delta.StopReason
+			}
+		}
+	}
+	if err := scanner.Err(); err != nil {
+		reqLog(r).Error("native anthropic non-stream scanner error", "error", err)
+		writeAnthropicError(w, 500, err.Error())
+		return
+	}
+	if current != nil {
+		content = append(content, *current)
+	}
+	if len(content) == 0 {
+		content = []ContentBlock{{Type: "text", Text: ""}}
+	}
+	if inTk > 0 || outTk > 0 {
+		store.SetTokenUsage(r, inTk, outTk)
+	}
+	writeAnthropicJSON(w, 200, &MessageResponse{
+		ID:         NewMessageID(),
+		Type:       "message",
+		Role:       "assistant",
+		Content:    content,
+		Model:      req.Model,
+		StopReason: &stopReason,
+		Usage: Usage{
+			InputTokens:  inTk,
+			OutputTokens: outTk,
+		},
+	})
+}
+
+func (h *Handler) connectNativeAnthropicStreamWithRetry(r *http.Request, body map[string]interface{}, client *joycode.Client) (*http.Response, error) {
+	maxRetries := 3
+	if h.store != nil {
+		maxRetries = h.store.GetIntSetting("max_retries", 3)
+	}
+	var lastErr error
+	for attempt := 1; attempt <= maxRetries; attempt++ {
+		resp, err := client.PostAnthropicStream(anthropicEndpoint, body)
+		if err != nil {
+			lastErr = err
+			reqLog(r).Error("native anthropic stream connect error", "attempt", attempt, "max", maxRetries, "error", err)
+			if attempt < maxRetries {
+				time.Sleep(time.Duration(attempt) * 500 * time.Millisecond)
+			}
+			continue
+		}
+		br := bufio.NewReaderSize(resp.Body, 64*1024)
+		firstLine, err := br.ReadString('\n')
+		if err != nil {
+			resp.Body.Close()
+			lastErr = fmt.Errorf("read first line: %w", err)
+			if attempt < maxRetries {
+				time.Sleep(time.Duration(attempt) * 500 * time.Millisecond)
+			}
+			continue
+		}
+		if err := nativeAnthropicLineError(firstLine); err != nil {
+			resp.Body.Close()
+			lastErr = err
+			if attempt < maxRetries {
+				time.Sleep(time.Duration(attempt) * 500 * time.Millisecond)
+			}
+			continue
+		}
+		resp.Body = &prependReader{first: []byte(firstLine), source: br, body: resp.Body}
+		return resp, nil
+	}
+	return nil, lastErr
+}
+
+func unwrapNativeAnthropicSSE(line string) string {
+	trimmed := strings.TrimSpace(line)
+	for {
+		next := strings.TrimSpace(strings.TrimPrefix(trimmed, "data:"))
+		if next == trimmed {
+			return trimmed
+		}
+		trimmed = next
+	}
+}
+
+func nativeAnthropicEventType(payload string) string {
+	var event struct {
+		Type string `json:"type"`
+	}
+	if err := json.Unmarshal([]byte(payload), &event); err != nil {
+		return ""
+	}
+	return event.Type
+}
+
+func nativeAnthropicLineError(line string) error {
+	payload := unwrapNativeAnthropicSSE(line)
+	if payload == "" || payload == "[DONE]" || !strings.HasPrefix(payload, "{") {
+		return nil
+	}
+	if isUpstreamError(payload) {
+		return fmt.Errorf("%s", payload)
+	}
+	return nil
+}
+
+func updateNativeAnthropicUsage(payload string, inputTokens, outputTokens *int) {
+	if payload == "" || payload == "[DONE]" || !strings.HasPrefix(payload, "{") {
+		return
+	}
+	var event struct {
+		Type    string `json:"type"`
+		Message struct {
+			Usage struct {
+				InputTokens  int `json:"input_tokens"`
+				OutputTokens int `json:"output_tokens"`
+			} `json:"usage"`
+		} `json:"message"`
+		Usage struct {
+			InputTokens  int `json:"input_tokens"`
+			OutputTokens int `json:"output_tokens"`
+		} `json:"usage"`
+	}
+	if err := json.Unmarshal([]byte(payload), &event); err != nil {
+		return
+	}
+	if event.Message.Usage.InputTokens > 0 {
+		*inputTokens = event.Message.Usage.InputTokens
+	}
+	if event.Message.Usage.OutputTokens > 0 {
+		*outputTokens = event.Message.Usage.OutputTokens
+	}
+	if event.Usage.InputTokens > 0 {
+		*inputTokens = event.Usage.InputTokens
+	}
+	if event.Usage.OutputTokens > 0 {
+		*outputTokens = event.Usage.OutputTokens
 	}
 }
 

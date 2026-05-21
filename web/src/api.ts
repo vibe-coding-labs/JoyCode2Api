@@ -3,6 +3,10 @@ export interface Account {
   nickname: string;
   remark: string;
   api_token: string;
+  pt_key_set: boolean;
+  pt_key_suffix?: string;
+  claude_pt_key_set: boolean;
+  claude_pt_key_suffix?: string;
   is_default: boolean;
   default_model: string;
   created_at?: string;
@@ -96,6 +100,8 @@ export interface RequestLog {
   status_code: number;
   latency_ms: number;
   error_message: string;
+  upstream_request: string;
+  upstream_response: string;
   input_tokens: number;
   output_tokens: number;
   created_at: string;
@@ -174,7 +180,7 @@ export const authApi = {
 
 export const api = {
   listAccounts: () => request<{ accounts: Account[] }>('/api/accounts').then(r => r.accounts),
-  addAccount: (data: { user_id: string; pt_key: string; nickname?: string; is_default?: boolean; default_model?: string }) =>
+  addAccount: (data: { user_id: string; pt_key: string; claude_pt_key?: string; nickname?: string; is_default?: boolean; default_model?: string }) =>
     request<{ ok: boolean }>('/api/accounts', { method: 'POST', body: JSON.stringify(data) }),
   removeAccount: (userId: string) =>
     request<{ ok: boolean }>(`/api/accounts/${encodeURIComponent(userId)}`, { method: 'DELETE' }),
@@ -199,30 +205,20 @@ export const api = {
     request<AccountStats>(`/api/accounts/${encodeURIComponent(userId)}/stats`),
   getAccountLogs: (userId: string, limit = 200) =>
     request<{ logs: RequestLog[]; total: number }>(`/api/accounts/${encodeURIComponent(userId)}/logs?limit=${limit}`),
+  getAccountCredential: (userId: string) =>
+    request<{ credential: string }>(`/api/accounts/${encodeURIComponent(userId)}/credential`),
+  clearRequestLogs: () =>
+    request<{ ok: boolean; deleted: number }>('/api/logs/clear', { method: 'POST' }),
   renewToken: (userId: string) =>
     request<{ ok: boolean; api_token: string }>(`/api/accounts/${encodeURIComponent(userId)}/renew-token`, { method: 'POST' }),
-  autoLogin: () =>
-    request<{ ok: boolean; user_id: string; nickname: string; real_name: string; is_default: boolean }>('/api/accounts-auto-login', { method: 'POST' }),
-  qrLoginInit: () =>
-    request<{ ok: boolean; session_id: string; qr_image: string }>('/api/qr-login/init', { method: 'POST' }),
-  qrLoginStatus: (sessionId: string) =>
-    request<{ status: string; ok?: boolean; user_id?: string; nickname?: string; real_name?: string; message?: string; verify_url?: string; risk_code?: number }>(`/api/qr-login/status?session=${encodeURIComponent(sessionId)}`),
-  browserLogin: () =>
-    request<{ ok: boolean; url: string; token: string }>('/api/browser-login', { method: 'POST' }),
+  ideLogin: () =>
+    request<{ ok: boolean; url: string; token: string }>('/api/ide-login', { method: 'POST' }),
   getRecentErrors: (limit = 50) =>
     request<{ errors: RequestLog[]; total: number }>(`/api/errors?limit=${limit}`),
   getGitHubStars: () =>
     request<{ stars: number }>('/api/github-stars').then(r => r.stars),
-  clearAllAccounts: () =>
-    request<{ ok: boolean; count: number }>('/api/accounts-clear-all', { method: 'POST' }),
-  clearJoyCodeSession: () =>
-    request<{ ok: boolean; message: string }>('/api/clear-joycode-session', { method: 'POST' }),
   updateRemark: (userId: string, remark: string) =>
     request<{ ok: boolean }>(`/api/accounts/${encodeURIComponent(userId)}/remark`, { method: 'PUT', body: JSON.stringify({ remark }) }),
   reorderAccounts: (userIds: string[]) =>
     request<{ ok: boolean }>('/api/accounts/reorder', { method: 'PUT', body: JSON.stringify({ user_ids: userIds }) }),
-  exportAccounts: () =>
-    request<{ ok: boolean; accounts: Array<{ user_id: string; nickname: string; remark: string; pt_key: string; is_default: boolean; default_model: string; display_order: number }>; count: number }>('/api/accounts-export'),
-  importAccounts: (accounts: Array<{ user_id: string; nickname: string; remark: string; pt_key: string; is_default: boolean; default_model: string; display_order: number }>) =>
-    request<{ ok: boolean; added: number; updated: number; total: number }>('/api/accounts-import', { method: 'POST', body: JSON.stringify({ accounts }) }),
 };

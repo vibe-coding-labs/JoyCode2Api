@@ -15,9 +15,27 @@ import (
 func TranslateRequest(req *MessageRequest, accountDefault string, systemDefault string) map[string]interface{} {
 	model := resolveModel(req.Model, accountDefault, systemDefault)
 	messages := buildMessages(req)
+	if joycode.ModelAdapter(model) == "openai-response" {
+		body := map[string]interface{}{
+			"model":             joycode.ChatAPIModel(model),
+			"input":             messages,
+			"stream":            req.Stream,
+			"max_output_tokens": req.MaxTokens,
+		}
+		if req.Temperature != nil {
+			body["temperature"] = *req.Temperature
+		}
+		if req.TopP != nil {
+			body["top_p"] = *req.TopP
+		}
+		if len(req.Tools) > 0 {
+			body["tools"] = convertToolsToResponses(req.Tools)
+		}
+		return body
+	}
 
 	body := map[string]interface{}{
-		"model":      model,
+		"model":      joycode.ChatAPIModel(model),
 		"messages":   messages,
 		"stream":     req.Stream,
 		"max_tokens": req.MaxTokens,
@@ -40,6 +58,19 @@ func TranslateRequest(req *MessageRequest, accountDefault string, systemDefault 
 		}
 	}
 	return body
+}
+
+func convertToolsToResponses(tools []Tool) []interface{} {
+	result := make([]interface{}, 0, len(tools))
+	for _, t := range tools {
+		result = append(result, map[string]interface{}{
+			"type":        "function",
+			"name":        t.Name,
+			"description": t.Description,
+			"parameters":  t.InputSchema,
+		})
+	}
+	return result
 }
 
 // TranslateAnthropicRequest converts an Anthropic request to JoyCode's native
@@ -91,17 +122,13 @@ func ClaudeNativeEnabled(s *store.Store) bool {
 }
 
 func IsNativeAnthropicModel(model string) bool {
-	m := strings.ToLower(model)
-	return strings.HasPrefix(m, "claude") || strings.Contains(m, "claude-")
+	return joycode.IsAnthropicModel(model)
 }
 
 func resolveNativeAnthropicModel(model string, accountDefault string, systemDefault string) string {
 	resolved := resolveModel(model, accountDefault, systemDefault)
-	if resolved == "Claude-Opus-4.7" {
-		return resolved
-	}
 	if IsNativeAnthropicModel(resolved) {
-		return "Claude-Opus-4.7"
+		return resolved
 	}
 	return resolved
 }
@@ -126,10 +153,18 @@ func convertToolsToOpenAI(tools []Tool) []interface{} {
 // TranslateResponse converts a JoyCode API response to Anthropic Message format.
 func TranslateResponse(jcResp map[string]interface{}, reqModel string) *MessageResponse {
 	msgID := "msg_" + newID()
+	jcResp = unwrapJoyCodeResult(jcResp)
 	usage := extractUsage(jcResp)
 
 	choices, _ := jcResp["choices"].([]interface{})
 	if len(choices) == 0 {
+		if text := extractResponsesText(jcResp); text != "" {
+			return &MessageResponse{
+				ID: msgID, Type: "message", Role: "assistant",
+				Model: reqModel, Content: []ContentBlock{{Type: "text", Text: text}},
+				StopReason: strPtr("end_turn"), Usage: usage,
+			}
+		}
 		return &MessageResponse{
 			ID: msgID, Type: "message", Role: "assistant",
 			Model: reqModel, Content: []ContentBlock{{Type: "text", Text: ""}},
@@ -183,7 +218,34 @@ func TranslateResponse(jcResp map[string]interface{}, reqModel string) *MessageR
 	}
 }
 
+func extractResponsesText(resp map[string]interface{}) string {
+	resp = unwrapJoyCodeResult(resp)
+	if text, ok := resp["output_text"].(string); ok && text != "" {
+		return text
+	}
+	output, _ := resp["output"].([]interface{})
+	parts := make([]string, 0)
+	for _, item := range output {
+		itemMap, _ := item.(map[string]interface{})
+		content, _ := itemMap["content"].([]interface{})
+		for _, c := range content {
+			cMap, _ := c.(map[string]interface{})
+			if text, ok := cMap["text"].(string); ok && text != "" {
+				parts = append(parts, text)
+				continue
+			}
+			if text, ok := cMap["content"].(string); ok && text != "" {
+				parts = append(parts, text)
+			}
+		}
+	}
+	return strings.Join(parts, "\n")
+}
+
 func resolveModel(model string, accountDefault string, systemDefault string) string {
+	if accountDefault != "" && IsNativeAnthropicModel(model) {
+		return accountDefault
+	}
 	for _, m := range joycode.Models {
 		if m == model {
 			return model
@@ -299,8 +361,8 @@ func convertAssistantBlocks(blocks []contentBlock) map[string]interface{} {
 	}
 
 	msg := map[string]interface{}{
-		"role":      "assistant",
-		"content":   strings.Join(textParts, "\n"),
+		"role":    "assistant",
+		"content": strings.Join(textParts, "\n"),
 	}
 	if len(toolCalls) > 0 {
 		msg["tool_calls"] = toolCalls
@@ -410,7 +472,15 @@ func parseContent(raw json.RawMessage) string {
 	return string(raw)
 }
 
+func unwrapJoyCodeResult(resp map[string]interface{}) map[string]interface{} {
+	if result, ok := resp["result"].(map[string]interface{}); ok && result != nil {
+		return result
+	}
+	return resp
+}
+
 func extractUsage(jcResp map[string]interface{}) Usage {
+	jcResp = unwrapJoyCodeResult(jcResp)
 	u := Usage{}
 	usage, _ := jcResp["usage"].(map[string]interface{})
 	if usage == nil {
@@ -452,7 +522,7 @@ func convertToolChoice(raw json.RawMessage) interface{} {
 	case "tool":
 		if tc.Name != "" {
 			return map[string]interface{}{
-				"type": "function",
+				"type":     "function",
 				"function": map[string]string{"name": tc.Name},
 			}
 		}
@@ -501,7 +571,86 @@ func ParseStreamChunk(line string) *StreamChunk {
 	if err := json.Unmarshal([]byte(line), &chunk); err != nil {
 		return nil
 	}
+	if len(chunk.Choices) == 0 {
+		return parseResponsesStreamChunk(line)
+	}
 	return &chunk
+}
+
+func parseResponsesStreamChunk(line string) *StreamChunk {
+	var event struct {
+		Type     string `json:"type"`
+		Delta    string `json:"delta"`
+		Response struct {
+			Status string `json:"status"`
+			Usage  struct {
+				InputTokens  int `json:"input_tokens"`
+				OutputTokens int `json:"output_tokens"`
+			} `json:"usage"`
+		} `json:"response"`
+		Usage struct {
+			InputTokens  int `json:"input_tokens"`
+			OutputTokens int `json:"output_tokens"`
+		} `json:"usage"`
+	}
+	if err := json.Unmarshal([]byte(line), &event); err != nil {
+		return nil
+	}
+	chunk := &StreamChunk{}
+	switch event.Type {
+	case "response.output_text.delta":
+		chunk.Choices = append(chunk.Choices, struct {
+			Delta struct {
+				Content   string `json:"content"`
+				ToolCalls []struct {
+					ID       string `json:"id"`
+					Index    int    `json:"index"`
+					Type     string `json:"type"`
+					Function struct {
+						Name      string `json:"name"`
+						Arguments string `json:"arguments"`
+					} `json:"function"`
+				} `json:"tool_calls"`
+			} `json:"delta"`
+			FinishReason *string `json:"finish_reason"`
+		}{})
+		chunk.Choices[0].Delta.Content = event.Delta
+	case "response.completed":
+		reason := "stop"
+		chunk.Choices = append(chunk.Choices, struct {
+			Delta struct {
+				Content   string `json:"content"`
+				ToolCalls []struct {
+					ID       string `json:"id"`
+					Index    int    `json:"index"`
+					Type     string `json:"type"`
+					Function struct {
+						Name      string `json:"name"`
+						Arguments string `json:"arguments"`
+					} `json:"function"`
+				} `json:"tool_calls"`
+			} `json:"delta"`
+			FinishReason *string `json:"finish_reason"`
+		}{FinishReason: &reason})
+		chunk.Usage = &struct {
+			PromptTokens     int `json:"prompt_tokens"`
+			CompletionTokens int `json:"completion_tokens"`
+		}{
+			PromptTokens:     event.Response.Usage.InputTokens,
+			CompletionTokens: event.Response.Usage.OutputTokens,
+		}
+	default:
+		if event.Usage.InputTokens > 0 || event.Usage.OutputTokens > 0 {
+			chunk.Usage = &struct {
+				PromptTokens     int `json:"prompt_tokens"`
+				CompletionTokens int `json:"completion_tokens"`
+			}{
+				PromptTokens:     event.Usage.InputTokens,
+				CompletionTokens: event.Usage.OutputTokens,
+			}
+		}
+	}
+	return chunk
 }
 
 // ParseStreamDelta extracts text content from an OpenAI SSE chunk.

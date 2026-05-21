@@ -25,14 +25,42 @@ const (
 
 var Models = []string{
 	"JoyAI-Code",
-	"Claude-Opus-4.7",
 	"MiniMax-M2.7",
 	"Kimi-K2.6",
-	"Kimi-K2.5",
 	"GLM-5.1",
 	"GLM-5",
-	"GLM-4.7",
+	"GLM-5-jcloud",
 	"Doubao-Seed-2.0-pro",
+	"Claude-Opus-4.7",
+	"Claude-Sonnet-4.6",
+	"Claude-Opus-4.6",
+	"GPT-5.3-codex",
+}
+
+var chatAPIModels = map[string]string{
+	"GPT-5.3-codex": "GPT 5.3-codex",
+}
+
+func ChatAPIModel(model string) string {
+	if apiModel, ok := chatAPIModels[model]; ok {
+		return apiModel
+	}
+	return model
+}
+
+func ModelAdapter(model string) string {
+	switch model {
+	case "Claude-Opus-4.7", "Claude-Sonnet-4.6", "Claude-Opus-4.6":
+		return "anthropic"
+	case "GPT-5.3-codex":
+		return "openai-response"
+	default:
+		return "openai"
+	}
+}
+
+func IsAnthropicModel(model string) bool {
+	return ModelAdapter(model) == "anthropic"
 }
 
 type Client struct {
@@ -84,6 +112,27 @@ func (c *Client) SetAnthropicPtKey(ptKey string) {
 	c.AnthropicPtKey = ptKey
 }
 
+func (c *Client) effectivePtKey() string {
+	if c.AnthropicPtKey != "" {
+		return c.AnthropicPtKey
+	}
+	return c.PtKey
+}
+
+func (c *Client) effectiveLoginType() string {
+	if c.AnthropicPtKey != "" {
+		return "PIN_JD_CLOUD"
+	}
+	return "N_PIN_PC"
+}
+
+func (c *Client) apiBaseURL() string {
+	if c.AnthropicPtKey != "" {
+		return SaasBaseURL
+	}
+	return BaseURL
+}
+
 func newHexID() string {
 	b := make([]byte, 16)
 	rand.Read(b)
@@ -93,8 +142,8 @@ func newHexID() string {
 func (c *Client) headers() http.Header {
 	return http.Header{
 		"Content-Type":    {"application/json; charset=UTF-8"},
-		"ptKey":           {c.PtKey},
-		"loginType":       {"N_PIN_PC"},
+		"ptKey":           {c.effectivePtKey()},
+		"loginType":       {c.effectiveLoginType()},
 		"User-Agent":      {UserAgent},
 		"Accept":          {"*/*"},
 		"Accept-Encoding": {"gzip, deflate, br"},
@@ -104,13 +153,9 @@ func (c *Client) headers() http.Header {
 }
 
 func (c *Client) anthropicHeaders() http.Header {
-	ptKey := c.PtKey
-	if c.AnthropicPtKey != "" {
-		ptKey = c.AnthropicPtKey
-	}
 	return http.Header{
 		"Content-Type":    {"application/json; charset=utf-8"},
-		"ptKey":           {ptKey},
+		"ptKey":           {c.effectivePtKey()},
 		"loginType":       {"PIN_JD_CLOUD"},
 		"User-Agent":      {UserAgent},
 		"Accept":          {"*/*"},
@@ -121,8 +166,12 @@ func (c *Client) anthropicHeaders() http.Header {
 }
 
 func (c *Client) prepareBody(extra map[string]interface{}) map[string]interface{} {
+	tenant := "JOYCODE"
+	if c.AnthropicPtKey != "" {
+		tenant = "JD"
+	}
 	body := map[string]interface{}{
-		"tenant": "JOYCODE", "userId": c.UserID,
+		"tenant": tenant, "userId": c.UserID,
 		"client": "JoyCode", "clientVersion": ClientVersion,
 		"sessionId": c.SessionID,
 	}
@@ -159,7 +208,7 @@ func (c *Client) doPost(endpoint string, body map[string]interface{}) (*http.Res
 		slog.Error("marshal request body", "endpoint", endpoint, "error", err)
 		return nil, err
 	}
-	req, err := http.NewRequest("POST", BaseURL+endpoint, bytes.NewReader(data))
+	req, err := http.NewRequest("POST", c.apiBaseURL()+endpoint, bytes.NewReader(data))
 	if err != nil {
 		slog.Error("create request", "endpoint", endpoint, "error", err)
 		return nil, err
@@ -211,11 +260,31 @@ func decodeStreamBody(resp *http.Response) error {
 }
 
 func (c *Client) Post(endpoint string, body map[string]interface{}) (map[string]interface{}, error) {
-	resp, err := c.doPost(endpoint, c.prepareBody(body))
+	resp, err := c.PostPrepared(endpoint, c.prepareBody(body))
+	if err != nil {
+		return nil, err
+	}
+	return decodeJSONResponse(endpoint, resp)
+}
+
+func (c *Client) PostPrepared(endpoint string, body map[string]interface{}) (*http.Response, error) {
+	resp, err := c.doPost(endpoint, body)
 	if err != nil {
 		slog.Error("upstream request failed", "endpoint", endpoint, "error", err)
 		return nil, err
 	}
+	return resp, nil
+}
+
+func (c *Client) PostPreparedJSON(endpoint string, body map[string]interface{}) (map[string]interface{}, error) {
+	resp, err := c.PostPrepared(endpoint, body)
+	if err != nil {
+		return nil, err
+	}
+	return decodeJSONResponse(endpoint, resp)
+}
+
+func decodeJSONResponse(endpoint string, resp *http.Response) (map[string]interface{}, error) {
 	data, err := decodeBody(resp)
 	if err != nil {
 		slog.Error("decode upstream response", "endpoint", endpoint, "status", resp.StatusCode, "error", err)
@@ -234,7 +303,11 @@ func (c *Client) Post(endpoint string, body map[string]interface{}) (map[string]
 }
 
 func (c *Client) PostStream(endpoint string, body map[string]interface{}) (*http.Response, error) {
-	resp, err := c.doPost(endpoint, c.prepareBody(body))
+	return c.PostPreparedStream(endpoint, c.prepareBody(body))
+}
+
+func (c *Client) PostPreparedStream(endpoint string, body map[string]interface{}) (*http.Response, error) {
+	resp, err := c.doPost(endpoint, body)
 	if err != nil {
 		slog.Error("upstream stream connect", "endpoint", endpoint, "error", err)
 		return nil, err
@@ -253,7 +326,19 @@ func (c *Client) PostStream(endpoint string, body map[string]interface{}) (*http
 }
 
 func (c *Client) PostAnthropicStream(endpoint string, body map[string]interface{}) (*http.Response, error) {
-	resp, err := c.doAnthropicPost(endpoint, c.prepareAnthropicBody(body))
+	return c.PostPreparedAnthropicStream(endpoint, c.prepareAnthropicBody(body))
+}
+
+func (c *Client) PrepareBody(body map[string]interface{}) map[string]interface{} {
+	return c.prepareBody(body)
+}
+
+func (c *Client) PrepareAnthropicBody(body map[string]interface{}) map[string]interface{} {
+	return c.prepareAnthropicBody(body)
+}
+
+func (c *Client) PostPreparedAnthropicStream(endpoint string, body map[string]interface{}) (*http.Response, error) {
+	resp, err := c.doAnthropicPost(endpoint, body)
 	if err != nil {
 		slog.Error("upstream anthropic stream connect", "endpoint", endpoint, "error", err)
 		return nil, err
@@ -298,7 +383,7 @@ func (c *Client) ListModels() ([]ModelInfo, error) {
 func (c *Client) WebSearch(query string) ([]interface{}, error) {
 	body := map[string]interface{}{
 		"messages": []map[string]string{{"role": "user", "content": query}},
-		"stream": false, "model": "search_pro_jina", "language": "UNKNOWN",
+		"stream":   false, "model": "search_pro_jina", "language": "UNKNOWN",
 	}
 	resp, err := c.Post("/api/saas/openai/v1/web-search", body)
 	if err != nil {

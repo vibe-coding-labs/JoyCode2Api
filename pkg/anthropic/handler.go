@@ -74,14 +74,14 @@ func (h *Handler) handleMessages(w http.ResponseWriter, r *http.Request) {
 		req.MaxTokens = 32768
 	}
 
-		accountDefault := store.GetAccountDefaultModel(r)
-		systemDefault := ""
-		if h.store != nil {
-			systemDefault = h.store.GetSetting("default_model")
-		}
-		resolved := resolveModel(req.Model, accountDefault, systemDefault)
-		store.SetModel(r, resolved)
-		reqLog(r).Info("anthropic request", "model", req.Model, "resolved", resolved, "stream", req.Stream, "max_tokens", req.MaxTokens, "messages", len(req.Messages), "tools", len(req.Tools))
+	accountDefault := store.GetAccountDefaultModel(r)
+	systemDefault := ""
+	if h.store != nil {
+		systemDefault = h.store.GetSetting("default_model")
+	}
+	resolved := resolveModel(req.Model, accountDefault, systemDefault)
+	store.SetModel(r, resolved)
+	reqLog(r).Info("anthropic request", "model", req.Model, "resolved", resolved, "stream", req.Stream, "max_tokens", req.MaxTokens, "messages", len(req.Messages), "tools", len(req.Tools))
 
 	client := h.getClient(r)
 
@@ -97,7 +97,8 @@ func (h *Handler) handleNonStream(w http.ResponseWriter, r *http.Request, req *M
 	if h.store != nil {
 		systemDefault = h.store.GetSetting("default_model")
 	}
-	if ClaudeNativeEnabled(h.store) && (IsNativeAnthropicModel(req.Model) || IsNativeAnthropicModel(resolveModel(req.Model, store.GetAccountDefaultModel(r), systemDefault))) {
+	resolved := resolveModel(req.Model, store.GetAccountDefaultModel(r), systemDefault)
+	if ClaudeNativeEnabled(h.store) && IsNativeAnthropicModel(resolved) {
 		h.handleNativeAnthropicNonStream(w, r, req, client, systemDefault)
 		return
 	}
@@ -111,6 +112,8 @@ func (h *Handler) handleNonStream(w http.ResponseWriter, r *http.Request, req *M
 
 	jcBody := TranslateRequest(req, store.GetAccountDefaultModel(r), systemDefault)
 	logRequestDetails(r, "translated request (non-stream)", jcBody)
+	preparedBody := prepareJoyCodeBody(client, resolved, jcBody)
+	recordUpstreamRequest(r, chatEndpoint, preparedBody)
 	maxRetries := 3
 	if h.store != nil {
 		maxRetries = h.store.GetIntSetting("max_retries", 3)
@@ -119,12 +122,14 @@ func (h *Handler) handleNonStream(w http.ResponseWriter, r *http.Request, req *M
 	var lastErr error
 
 	for attempt := 1; attempt <= maxRetries; attempt++ {
-		jcResp, lastErr = client.Post(chatEndpoint, jcBody)
+		jcResp, lastErr = client.PostPreparedJSON(chatEndpoint, preparedBody)
 		if lastErr != nil {
 			if isContextLimitError(lastErr.Error()) {
 				// Progressive truncation on context limit
 				if truncateMessages(req) {
 					jcBody = TranslateRequest(req, store.GetAccountDefaultModel(r), systemDefault)
+					preparedBody = prepareJoyCodeBody(client, resolved, jcBody)
+					recordUpstreamRequest(r, chatEndpoint, preparedBody)
 					reqLog(r).Warn("retrying with truncated messages (non-stream)", "attempt", attempt)
 					continue
 				}
@@ -154,7 +159,6 @@ func (h *Handler) handleNonStream(w http.ResponseWriter, r *http.Request, req *M
 		writeAnthropicError(w, 500, lastErr.Error())
 		return
 	}
-	resp := TranslateResponse(jcResp, req.Model)
 	// Check for content_filter in non-stream response
 	if choices, ok := jcResp["choices"].([]interface{}); ok && len(choices) > 0 {
 		if choice, ok := choices[0].(map[string]interface{}); ok {
@@ -165,6 +169,7 @@ func (h *Handler) handleNonStream(w http.ResponseWriter, r *http.Request, req *M
 			}
 		}
 	}
+	resp := TranslateResponse(jcResp, resolved)
 	if usage, ok := jcResp["usage"].(map[string]interface{}); ok {
 		inTk, _ := usage["prompt_tokens"].(float64)
 		outTk, _ := usage["completion_tokens"].(float64)
@@ -204,7 +209,8 @@ func (h *Handler) handleStream(w http.ResponseWriter, r *http.Request, req *Mess
 		writeAnthropicError(w, 500, "streaming not supported")
 		return
 	}
-	if ClaudeNativeEnabled(h.store) && (IsNativeAnthropicModel(req.Model) || IsNativeAnthropicModel(resolveModel(req.Model, store.GetAccountDefaultModel(r), systemDefault))) {
+	resolved := resolveModel(req.Model, store.GetAccountDefaultModel(r), systemDefault)
+	if ClaudeNativeEnabled(h.store) && IsNativeAnthropicModel(resolved) {
 		h.handleNativeAnthropicStream(w, r, req, client, flusher, systemDefault)
 		return
 	}
@@ -223,9 +229,11 @@ func (h *Handler) handleStream(w http.ResponseWriter, r *http.Request, req *Mess
 
 	jcBody = TranslateRequest(req, store.GetAccountDefaultModel(r), systemDefault)
 	jcBody["stream"] = true
+	preparedBody := prepareJoyCodeBody(client, resolved, jcBody)
+	recordUpstreamRequest(r, chatEndpoint, preparedBody)
 
 	// Connect with retry, progressive auto-truncate on context limit
-	resp, err := h.connectStreamWithRetry(r, jcBody, client)
+	resp, err := h.connectStreamWithRetry(r, preparedBody, client)
 	for truncRound := 0; err != nil && isContextLimitError(err.Error()) && truncRound < maxTruncationRounds; truncRound++ {
 		reqLog(r).Warn("stream context limit, truncating", "round", truncRound+1)
 		if !truncateMessages(req) {
@@ -233,7 +241,9 @@ func (h *Handler) handleStream(w http.ResponseWriter, r *http.Request, req *Mess
 		}
 		jcBody = TranslateRequest(req, store.GetAccountDefaultModel(r), systemDefault)
 		jcBody["stream"] = true
-		resp, err = h.connectStreamWithRetry(r, jcBody, client)
+		preparedBody = prepareJoyCodeBody(client, resolved, jcBody)
+		recordUpstreamRequest(r, chatEndpoint, preparedBody)
+		resp, err = h.connectStreamWithRetry(r, preparedBody, client)
 	}
 	if err != nil {
 		errMsg := err.Error()
@@ -266,7 +276,7 @@ func (h *Handler) handleStream(w http.ResponseWriter, r *http.Request, req *Mess
 	w.WriteHeader(200)
 
 	msgID := NewMessageID()
-	model := req.Model
+	model := resolved
 	totalOutput := 0
 
 	FormatSSE(w, "message_start", sseMessageStart{
@@ -424,8 +434,8 @@ func (h *Handler) handleStream(w http.ResponseWriter, r *http.Request, req *Mess
 				stopReason = "max_tokens"
 			case "stop":
 				stopReason = "end_turn"
-				case "content_filter":
-					stopReason = "end_turn"
+			case "content_filter":
+				stopReason = "end_turn"
 			}
 			FormatSSE(w, "message_delta", sseMessageDelta{
 				Type:  "message_delta",
@@ -499,8 +509,10 @@ func (h *Handler) handleStream(w http.ResponseWriter, r *http.Request, req *Mess
 func (h *Handler) handleNativeAnthropicStream(w http.ResponseWriter, r *http.Request, req *MessageRequest, client *joycode.Client, flusher http.Flusher, systemDefault string) {
 	body := TranslateAnthropicRequest(req, store.GetAccountDefaultModel(r), systemDefault)
 	logRequestDetails(r, "translated native anthropic request (stream)", body)
+	preparedBody := client.PrepareAnthropicBody(body)
+	recordUpstreamRequest(r, anthropicEndpoint, preparedBody)
 
-	resp, err := h.connectNativeAnthropicStreamWithRetry(r, body, client)
+	resp, err := h.connectNativeAnthropicStreamWithRetry(r, preparedBody, client)
 	if err != nil {
 		reqLog(r).Error("native anthropic stream failed after retries", "error", err)
 		writeAnthropicError(w, 500, err.Error())
@@ -565,8 +577,10 @@ func (h *Handler) handleNativeAnthropicStream(w http.ResponseWriter, r *http.Req
 func (h *Handler) handleNativeAnthropicNonStream(w http.ResponseWriter, r *http.Request, req *MessageRequest, client *joycode.Client, systemDefault string) {
 	body := TranslateAnthropicRequest(req, store.GetAccountDefaultModel(r), systemDefault)
 	logRequestDetails(r, "translated native anthropic request (non-stream)", body)
+	preparedBody := client.PrepareAnthropicBody(body)
+	recordUpstreamRequest(r, anthropicEndpoint, preparedBody)
 
-	resp, err := h.connectNativeAnthropicStreamWithRetry(r, body, client)
+	resp, err := h.connectNativeAnthropicStreamWithRetry(r, preparedBody, client)
 	if err != nil {
 		reqLog(r).Error("native anthropic non-stream failed after retries", "error", err)
 		writeAnthropicError(w, 500, err.Error())
@@ -692,9 +706,11 @@ func (h *Handler) connectNativeAnthropicStreamWithRetry(r *http.Request, body ma
 	}
 	var lastErr error
 	for attempt := 1; attempt <= maxRetries; attempt++ {
-		resp, err := client.PostAnthropicStream(anthropicEndpoint, body)
+		resp, err := client.PostPreparedAnthropicStream(anthropicEndpoint, body)
 		if err != nil {
 			lastErr = err
+			store.SetUpstreamError(r, err.Error())
+			recordUpstreamResponse(r, anthropicEndpoint, err.Error())
 			reqLog(r).Error("native anthropic stream connect error", "attempt", attempt, "max", maxRetries, "error", err)
 			if attempt < maxRetries {
 				time.Sleep(time.Duration(attempt) * 500 * time.Millisecond)
@@ -706,6 +722,8 @@ func (h *Handler) connectNativeAnthropicStreamWithRetry(r *http.Request, body ma
 		if err != nil {
 			resp.Body.Close()
 			lastErr = fmt.Errorf("read first line: %w", err)
+			store.SetUpstreamError(r, lastErr.Error())
+			recordUpstreamResponse(r, anthropicEndpoint, lastErr.Error())
 			if attempt < maxRetries {
 				time.Sleep(time.Duration(attempt) * 500 * time.Millisecond)
 			}
@@ -714,12 +732,15 @@ func (h *Handler) connectNativeAnthropicStreamWithRetry(r *http.Request, body ma
 		if err := nativeAnthropicLineError(firstLine); err != nil {
 			resp.Body.Close()
 			lastErr = err
+			store.SetUpstreamError(r, firstLine)
+			recordUpstreamResponse(r, anthropicEndpoint, firstLine)
 			if attempt < maxRetries {
 				time.Sleep(time.Duration(attempt) * 500 * time.Millisecond)
 			}
 			continue
 		}
 		resp.Body = &prependReader{first: []byte(firstLine), source: br, body: resp.Body}
+		recordUpstreamResponse(r, anthropicEndpoint, firstLine)
 		return resp, nil
 	}
 	return nil, lastErr
@@ -852,9 +873,11 @@ func (h *Handler) connectStreamWithRetry(r *http.Request, jcBody map[string]inte
 	var lastErr error
 
 	for attempt := 1; attempt <= maxRetries; attempt++ {
-		resp, err := client.PostStream(chatEndpoint, jcBody)
+		resp, err := client.PostPreparedStream(chatEndpoint, jcBody)
 		if err != nil {
 			lastErr = err
+			store.SetUpstreamError(r, err.Error())
+			recordUpstreamResponse(r, chatEndpoint, err.Error())
 			reqLog(r).Error("stream connect error", "attempt", attempt, "max", maxRetries, "error", err)
 			if attempt < maxRetries {
 				time.Sleep(time.Duration(attempt) * 500 * time.Millisecond)
@@ -867,6 +890,8 @@ func (h *Handler) connectStreamWithRetry(r *http.Request, jcBody map[string]inte
 		if err != nil {
 			resp.Body.Close()
 			lastErr = fmt.Errorf("read first line: %w", err)
+			store.SetUpstreamError(r, lastErr.Error())
+			recordUpstreamResponse(r, chatEndpoint, lastErr.Error())
 			reqLog(r).Error("stream read first line", "attempt", attempt, "max", maxRetries, "error", lastErr)
 			if attempt < maxRetries {
 				time.Sleep(time.Duration(attempt) * 500 * time.Millisecond)
@@ -879,6 +904,8 @@ func (h *Handler) connectStreamWithRetry(r *http.Request, jcBody map[string]inte
 		if isUpstreamError(dataContent) {
 			resp.Body.Close()
 			lastErr = fmt.Errorf("upstream error: %s", truncate(dataContent, 500))
+			store.SetUpstreamError(r, dataContent)
+			recordUpstreamResponse(r, chatEndpoint, dataContent)
 			logUpstreamError(r, attempt, maxRetries, dataContent)
 			if isContextLimitError(dataContent) {
 				return nil, lastErr
@@ -926,6 +953,7 @@ func (h *Handler) connectStreamWithRetry(r *http.Request, jcBody map[string]inte
 			body:   originalBody,
 		}
 		reqLog(r).Info("stream connected", "attempt", attempt)
+		recordUpstreamResponse(r, chatEndpoint, firstLine)
 		return resp, nil
 	}
 	return nil, fmt.Errorf("stream failed after %d attempts: %w", maxRetries, lastErr)

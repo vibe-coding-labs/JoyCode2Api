@@ -3,6 +3,7 @@ package openai
 import (
 	"encoding/json"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/vibe-coding-labs/JoyCodeProxy/pkg/joycode"
@@ -10,8 +11,36 @@ import (
 
 // TranslateRequest converts an OpenAI ChatRequest to JoyCode API body.
 func TranslateRequest(req *ChatRequest) map[string]interface{} {
+	if joycode.ModelAdapter(req.Model) == "openai-response" {
+		body := map[string]interface{}{
+			"model":  joycode.ChatAPIModel(req.Model),
+			"stream": req.Stream,
+		}
+		if len(req.Messages) > 0 {
+			var msgs []interface{}
+			json.Unmarshal(req.Messages, &msgs)
+			body["input"] = msgs
+		}
+		if req.MaxTokens > 0 {
+			body["max_output_tokens"] = req.MaxTokens
+		}
+		if req.Temperature != nil {
+			body["temperature"] = *req.Temperature
+		}
+		if req.TopP != nil {
+			body["top_p"] = *req.TopP
+		}
+		if len(req.Tools) > 0 {
+			var tools []map[string]interface{}
+			if json.Unmarshal(req.Tools, &tools) == nil {
+				body["tools"] = convertOpenAIToolsToResponses(tools)
+			}
+		}
+		return body
+	}
+
 	body := map[string]interface{}{
-		"model":  req.Model,
+		"model":  joycode.ChatAPIModel(req.Model),
 		"stream": req.Stream,
 	}
 	if len(req.Messages) > 0 {
@@ -45,17 +74,84 @@ func TranslateRequest(req *ChatRequest) map[string]interface{} {
 	return body
 }
 
+func convertOpenAIToolsToResponses(tools []map[string]interface{}) []interface{} {
+	result := make([]interface{}, 0, len(tools))
+	for _, t := range tools {
+		if t["type"] != "function" {
+			result = append(result, t)
+			continue
+		}
+		fn, _ := t["function"].(map[string]interface{})
+		if fn == nil {
+			result = append(result, t)
+			continue
+		}
+		result = append(result, map[string]interface{}{
+			"type":        "function",
+			"name":        fn["name"],
+			"description": fn["description"],
+			"parameters":  fn["parameters"],
+		})
+	}
+	return result
+}
+
 // TranslateResponse converts a JoyCode API response to OpenAI format.
 func TranslateResponse(jcResp map[string]interface{}, model string) map[string]interface{} {
+	jcResp = unwrapJoyCodeResult(jcResp)
+	choices := jcResp["choices"]
+	if choices == nil {
+		choices = []map[string]interface{}{
+			{
+				"index": 0,
+				"message": map[string]interface{}{
+					"role":    "assistant",
+					"content": extractResponsesText(jcResp),
+				},
+				"finish_reason": "stop",
+			},
+		}
+	}
 	return map[string]interface{}{
 		"id":                 fmt.Sprintf("chatcmpl-%s", newShortID()),
 		"object":             "chat.completion",
 		"created":            time.Now().Unix(),
 		"model":              model,
-		"choices":            jcResp["choices"],
+		"choices":            choices,
 		"usage":              jcResp["usage"],
 		"system_fingerprint": fmt.Sprintf("fp_%s", newShortID()),
 	}
+}
+
+func extractResponsesText(resp map[string]interface{}) string {
+	resp = unwrapJoyCodeResult(resp)
+	if text, ok := resp["output_text"].(string); ok && text != "" {
+		return text
+	}
+	output, _ := resp["output"].([]interface{})
+	parts := make([]string, 0)
+	for _, item := range output {
+		itemMap, _ := item.(map[string]interface{})
+		content, _ := itemMap["content"].([]interface{})
+		for _, c := range content {
+			cMap, _ := c.(map[string]interface{})
+			if text, ok := cMap["text"].(string); ok && text != "" {
+				parts = append(parts, text)
+				continue
+			}
+			if text, ok := cMap["content"].(string); ok && text != "" {
+				parts = append(parts, text)
+			}
+		}
+	}
+	return strings.Join(parts, "\n")
+}
+
+func unwrapJoyCodeResult(resp map[string]interface{}) map[string]interface{} {
+	if result, ok := resp["result"].(map[string]interface{}); ok && result != nil {
+		return result
+	}
+	return resp
 }
 
 // TranslateModels converts JoyCode models to OpenAI /v1/models format.

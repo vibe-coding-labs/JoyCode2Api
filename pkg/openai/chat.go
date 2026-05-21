@@ -11,6 +11,8 @@ import (
 	"github.com/vibe-coding-labs/JoyCodeProxy/pkg/store"
 )
 
+const chatEndpoint = "/api/saas/openai/v1/chat/completions"
+
 func (s *Server) handleChat(w http.ResponseWriter, r *http.Request) {
 	if !requirePOST(w, r) {
 		return
@@ -26,19 +28,23 @@ func (s *Server) handleChat(w http.ResponseWriter, r *http.Request) {
 		systemDefault = s.store.GetSetting("default_model")
 	}
 	model := ResolveModel(req.Model, store.GetAccountDefaultModel(r), systemDefault)
-		store.SetModel(r, model)
-		jcBody := TranslateRequest(&req)
+	store.SetModel(r, model)
+	req.Model = model
+	jcBody := TranslateRequest(&req)
 	client := s.getClient(r)
+	preparedBody := prepareJoyCodeBody(client, model, jcBody)
+	store.SetUpstreamRequest(r, formatUpstreamPayload(chatEndpoint, preparedBody))
 	if req.Stream {
-		s.handleStreamChat(w, r, client, jcBody, model)
+		s.handleStreamChat(w, r, client, preparedBody, model)
 	} else {
-		s.handleNonStreamChat(w, r, client, jcBody, model)
+		s.handleNonStreamChat(w, r, client, preparedBody, model)
 	}
 }
 
 func (s *Server) handleNonStreamChat(w http.ResponseWriter, r *http.Request, client *joycode.Client, jcBody map[string]interface{}, model string) {
-	resp, err := client.Post("/api/saas/openai/v1/chat/completions", jcBody)
+	resp, err := client.PostPreparedJSON(chatEndpoint, jcBody)
 	if err != nil {
+		store.SetUpstreamResponse(r, formatUpstreamPayload(chatEndpoint, map[string]interface{}{"error": err.Error()}))
 		slog.Error("chat non-stream upstream error", "model", model, "error", err)
 		msg := err.Error()
 		code := 500
@@ -54,6 +60,7 @@ func (s *Server) handleNonStreamChat(w http.ResponseWriter, r *http.Request, cli
 		outTk, _ := usage["completion_tokens"].(float64)
 		store.SetTokenUsage(r, int(inTk), int(outTk))
 	}
+	store.SetUpstreamResponse(r, formatUpstreamPayload(chatEndpoint, resp))
 	writeJSON(w, 200, TranslateResponse(resp, model))
 }
 
@@ -69,8 +76,9 @@ func (s *Server) handleStreamChat(w http.ResponseWriter, r *http.Request, client
 	w.Header().Set("Access-Control-Allow-Origin", "*")
 	w.WriteHeader(200)
 
-	resp, err := client.PostStream("/api/saas/openai/v1/chat/completions", jcBody)
+	resp, err := client.PostPreparedStream(chatEndpoint, jcBody)
 	if err != nil {
+		store.SetUpstreamResponse(r, formatUpstreamPayload(chatEndpoint, map[string]interface{}{"error": err.Error()}))
 		slog.Error("chat stream upstream error", "model", model, "error", err)
 		msg := err.Error()
 		if isTimeoutError(msg) {
@@ -93,12 +101,38 @@ func (s *Server) handleStreamChat(w http.ResponseWriter, r *http.Request, client
 			flusher.Flush()
 		}
 		if readErr != nil {
-				if readErr.Error() != "EOF" {
-					slog.Error("chat stream read error", "model", model, "error", readErr)
-				}
+			if readErr.Error() != "EOF" {
+				slog.Error("chat stream read error", "model", model, "error", readErr)
+			}
 			break
 		}
 	}
+}
+
+func formatUpstreamPayload(endpoint string, body map[string]interface{}) string {
+	payload := map[string]interface{}{
+		"endpoint": endpoint,
+		"body":     body,
+	}
+	data, err := json.MarshalIndent(payload, "", "  ")
+	if err != nil {
+		return err.Error()
+	}
+	const maxLen = 200000
+	text := string(data)
+	if len(text) > maxLen {
+		return text[:maxLen] + "\n... truncated ..."
+	}
+	return text
+}
+
+func prepareJoyCodeBody(client interface {
+	PrepareBody(map[string]interface{}) map[string]interface{}
+}, model string, body map[string]interface{}) map[string]interface{} {
+	if joycode.ModelAdapter(model) == "openai-response" {
+		return body
+	}
+	return client.PrepareBody(body)
 }
 
 func isTimeoutError(msg string) bool {

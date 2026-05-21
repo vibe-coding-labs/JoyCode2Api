@@ -5,6 +5,9 @@ import (
 	"encoding/json"
 	"log/slog"
 	"net/http"
+
+	"github.com/vibe-coding-labs/JoyCodeProxy/pkg/joycode"
+	"github.com/vibe-coding-labs/JoyCodeProxy/pkg/store"
 )
 
 type contextKey string
@@ -29,7 +32,7 @@ func reqLog(r *http.Request) *slog.Logger {
 	return slog.With("request_id", reqID(r))
 }
 
-// logRequestDetails logs the translated request body summary for debugging.
+// logRequestDetails logs a compact summary of the translated request body.
 // Logs message count, tool count, system prompt length, and first few message roles.
 func logRequestDetails(r *http.Request, label string, body map[string]interface{}) {
 	log := reqLog(r)
@@ -52,6 +55,54 @@ func logRequestDetails(r *http.Request, label string, body map[string]interface{
 		"messages", msgCount,
 		"tools", toolCount,
 	)
+}
+
+func recordUpstreamRequest(r *http.Request, endpoint string, body map[string]interface{}) {
+	payload := map[string]interface{}{
+		"endpoint": endpoint,
+		"body":     body,
+	}
+	data, err := json.MarshalIndent(payload, "", "  ")
+	if err != nil {
+		store.SetUpstreamRequest(r, err.Error())
+		return
+	}
+	const maxLen = 200000
+	text := string(data)
+	if len(text) > maxLen {
+		text = text[:maxLen] + "\n... truncated ..."
+	}
+	store.SetUpstreamRequest(r, text)
+}
+
+func recordUpstreamResponse(r *http.Request, endpoint string, payload string) {
+	data := map[string]interface{}{
+		"endpoint": endpoint,
+		"body":     payload,
+	}
+	b, err := json.MarshalIndent(data, "", "  ")
+	if err != nil {
+		store.SetUpstreamResponse(r, truncateLogText(payload))
+		return
+	}
+	store.SetUpstreamResponse(r, truncateLogText(string(b)))
+}
+
+func truncateLogText(text string) string {
+	const maxLen = 200000
+	if len(text) > maxLen {
+		return text[:maxLen] + "\n... truncated ..."
+	}
+	return text
+}
+
+func prepareJoyCodeBody(client interface {
+	PrepareBody(map[string]interface{}) map[string]interface{}
+}, model string, body map[string]interface{}) map[string]interface{} {
+	if joycode.ModelAdapter(model) == "openai-response" {
+		return body
+	}
+	return client.PrepareBody(body)
 }
 
 // logUpstreamError logs the full upstream error response for diagnosis.

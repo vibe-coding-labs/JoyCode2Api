@@ -27,17 +27,19 @@ type ModelCapability struct {
 // ModelCapabilities maps model IDs to their capabilities.
 var ModelCapabilities = map[string]ModelCapability{
 	"JoyAI-Code":          {MaxTokens: 64000, Ctx: 200000},
-	"Claude-Opus-4.7":     {MaxTokens: 32000, Ctx: 200000},
 	"MiniMax-M2.7":        {Reasoning: true, MaxTokens: 16384, Ctx: 200000},
-	"Kimi-K2.5":           {Vision: true, MaxTokens: 16384, Ctx: 200000},
 	"Kimi-K2.6":           {Vision: true, Reasoning: true, MaxTokens: 16384, Ctx: 200000},
 	"GLM-5.1":             {Reasoning: true, MaxTokens: 16384, Ctx: 200000},
 	"GLM-5":               {MaxTokens: 8192, Ctx: 200000},
-	"GLM-4.7":             {MaxTokens: 8192, Ctx: 200000},
+	"GLM-5-jcloud":        {MaxTokens: 8192, Ctx: 200000},
 	"Doubao-Seed-2.0-pro": {MaxTokens: 16384, Ctx: 200000},
+	"Claude-Opus-4.7":     {Vision: true, MaxTokens: 16384, Ctx: 200000},
+	"Claude-Sonnet-4.6":   {Vision: true, MaxTokens: 16384, Ctx: 200000},
+	"Claude-Opus-4.6":     {Vision: true, MaxTokens: 16384, Ctx: 200000},
+	"GPT-5.3-codex":       {Reasoning: true, MaxTokens: 16384, Ctx: 200000},
 }
 
 // ReasoningModels supports thinking/reasoning control parameters.
 var ReasoningModels = map[string]bool{
-	"GLM-5.1": true, "Kimi-K2.6": true, "MiniMax-M2.7": true,
+	"GLM-5.1": true, "Kimi-K2.6": true, "MiniMax-M2.7": true, "GPT-5.3-codex": true,
 }

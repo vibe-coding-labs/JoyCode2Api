@@ -11,6 +11,12 @@ type modelCtxKey struct{}
 
 type accountModelCtxKey struct{}
 
+type upstreamErrorCtxKey struct{}
+
+type upstreamRequestCtxKey struct{}
+
+type upstreamResponseCtxKey struct{}
+
 // InitTokenUsage initializes token usage tracking in the request context.
 // Returns a pointer that handlers can update with SetTokenUsage.
 func InitTokenUsage(r *http.Request) *http.Request {
@@ -74,4 +80,67 @@ func GetAccountDefaultModel(r *http.Request) string {
 func InitAccountModel(r *http.Request) *http.Request {
 	m := new(string)
 	return r.WithContext(context.WithValue(r.Context(), accountModelCtxKey{}, m))
+}
+
+// SetUpstreamError stores raw upstream error details in the request context.
+func SetUpstreamError(r *http.Request, errMsg string) {
+	if m, ok := r.Context().Value(upstreamErrorCtxKey{}).(*string); ok {
+		*m = errMsg
+	}
+}
+
+// GetUpstreamError retrieves raw upstream error details from the request context.
+func GetUpstreamError(r *http.Request) string {
+	if m, ok := r.Context().Value(upstreamErrorCtxKey{}).(*string); ok {
+		return *m
+	}
+	return ""
+}
+
+// InitUpstreamError initializes upstream error tracking in the request context.
+func InitUpstreamError(r *http.Request) *http.Request {
+	m := new(string)
+	return r.WithContext(context.WithValue(r.Context(), upstreamErrorCtxKey{}, m))
+}
+
+// SetUpstreamRequest stores the final JoyCode request payload for request logs.
+func SetUpstreamRequest(r *http.Request, payload string) {
+	if m, ok := r.Context().Value(upstreamRequestCtxKey{}).(*string); ok {
+		*m = payload
+	}
+}
+
+// GetUpstreamRequest retrieves the final JoyCode request payload for request logs.
+func GetUpstreamRequest(r *http.Request) string {
+	if m, ok := r.Context().Value(upstreamRequestCtxKey{}).(*string); ok {
+		return *m
+	}
+	return ""
+}
+
+// InitUpstreamRequest initializes upstream request tracking in the request context.
+func InitUpstreamRequest(r *http.Request) *http.Request {
+	m := new(string)
+	return r.WithContext(context.WithValue(r.Context(), upstreamRequestCtxKey{}, m))
+}
+
+// SetUpstreamResponse stores raw upstream response details for request logs.
+func SetUpstreamResponse(r *http.Request, payload string) {
+	if m, ok := r.Context().Value(upstreamResponseCtxKey{}).(*string); ok {
+		*m = payload
+	}
+}
+
+// GetUpstreamResponse retrieves raw upstream response details for request logs.
+func GetUpstreamResponse(r *http.Request) string {
+	if m, ok := r.Context().Value(upstreamResponseCtxKey{}).(*string); ok {
+		return *m
+	}
+	return ""
+}
+
+// InitUpstreamResponse initializes upstream response tracking in the request context.
+func InitUpstreamResponse(r *http.Request) *http.Request {
+	m := new(string)
+	return r.WithContext(context.WithValue(r.Context(), upstreamResponseCtxKey{}, m))
 }

@@ -20,11 +20,11 @@ type CredentialStatus struct {
 
 // Keeper runs periodic keep-alive checks for all accounts.
 type Keeper struct {
-	store    *store.Store
-	mu       sync.RWMutex
-	status   map[string]*CredentialStatus
-	running  bool
-	stopCh   chan struct{}
+	store      *store.Store
+	mu         sync.RWMutex
+	status     map[string]*CredentialStatus
+	running    bool
+	stopCh     chan struct{}
 	refreshTTL time.Duration // max age before an account needs refresh
 }
 
@@ -118,7 +118,7 @@ func (k *Keeper) checkStale() {
 			"user_id", acc.UserID,
 		)
 
-		result := k.checkOne(acc.UserID, acc.PtKey, acc.UserID)
+		result := k.checkOne(acc.UserID, acc.PtKey, acc.ClaudePtKey, acc.UserID)
 
 		switch result {
 		case "valid":
@@ -145,18 +145,22 @@ func (k *Keeper) checkStale() {
 
 // checkOne validates a single account and refreshes pt_key if possible.
 // Returns "valid", "refreshed", or "failed".
-func (k *Keeper) checkOne(apiKey, ptKey, userID string) string {
+func (k *Keeper) checkOne(apiKey, ptKey, credentialPtKey, userID string) string {
 	if userID == "" {
 		slog.Error("keepalive: checkOne called with empty userID")
 		return "failed"
+	}
+	if credentialPtKey == "" {
+		credentialPtKey = ptKey
 	}
 
 	checkStart := time.Now()
 
 	client := joycode.NewClient(ptKey, userID)
+	client.SetAnthropicPtKey(credentialPtKey)
 	client.SetTimeout(30 * time.Second)
 
-	refreshedPtKey, err := client.UserInfoWithRefresh()
+	err := client.Validate()
 	checkDuration := time.Since(checkStart)
 	now := time.Now()
 
@@ -169,7 +173,7 @@ func (k *Keeper) checkOne(apiKey, ptKey, userID string) string {
 			"user_id", userID,
 			"error", err,
 			"duration", checkDuration,
-			"pt_key_prefix", maskKey(ptKey),
+			"credential_prefix", maskKey(credentialPtKey),
 		)
 		k.status[apiKey] = &CredentialStatus{
 			Valid:        false,
@@ -186,58 +190,16 @@ func (k *Keeper) checkOne(apiKey, ptKey, userID string) string {
 		LastChecked: now,
 	}
 
-	if refreshedPtKey != "" && refreshedPtKey != ptKey {
-		slog.Info("keepalive: pt_key refresh available",
-			"user_id", apiKey,
-			"user_id", userID,
-			"old_prefix", maskKey(ptKey),
-			"new_prefix", maskKey(refreshedPtKey),
-		)
+	k.store.UpdateCredentialRefreshedAt(apiKey)
+	status.LastRefreshed = now
 
-		if err := k.store.UpdatePtKey(apiKey, refreshedPtKey); err != nil {
-			slog.Error("keepalive: failed to save refreshed pt_key",
-				"user_id", apiKey,
-				"error", err,
-			)
-		} else {
-			status.LastRefreshed = now
-
-			verifyClient := joycode.NewClient(refreshedPtKey, userID)
-			verifyClient.SetTimeout(15 * time.Second)
-			if verifyErr := verifyClient.Validate(); verifyErr != nil {
-				slog.Error("keepalive: refreshed pt_key verification FAILED",
-					"user_id", apiKey,
-					"user_id", userID,
-					"error", verifyErr,
-				)
-			} else {
-				slog.Info("keepalive: refreshed pt_key verified OK",
-					"user_id", apiKey,
-					"user_id", userID,
-				)
-			}
-
-			slog.Info("keepalive: pt_key refreshed and saved",
-				"user_id", apiKey,
-				"user_id", userID,
-			)
-		}
-	} else {
-		// No refresh needed, but update credential_refreshed_at so this account
-		// doesn't get re-checked next cycle
-		k.store.UpdateCredentialRefreshedAt(apiKey)
-
-		slog.Info("keepalive: account valid, no refresh needed",
-			"user_id", apiKey,
-			"user_id", userID,
-			"duration", checkDuration,
-		)
-	}
+	slog.Info("keepalive: account credential valid",
+		"user_id", apiKey,
+		"user_id", userID,
+		"duration", checkDuration,
+	)
 
 	k.status[apiKey] = status
-	if refreshedPtKey != "" && refreshedPtKey != ptKey {
-		return "refreshed"
-	}
 	return "valid"
 }
 

@@ -33,9 +33,9 @@ import (
 )
 
 var (
-	serveHost       string
-	servePort       int
-	serveTLS        bool
+	serveHost      string
+	servePort      int
+	serveTLS       bool
 	requestCounter uint64
 )
 
@@ -143,7 +143,9 @@ var serveCmd = &cobra.Command{
 				if apiKey != "" {
 					if account, _ := s.GetAccountByToken(apiKey); account != nil {
 						cl := joycode.NewClient(account.PtKey, account.UserID)
-						if systemClient != nil && systemClient.PtKey != "" && systemClient.PtKey != "placeholder" && systemClient.UserID == account.UserID {
+						if account.ClaudePtKey != "" {
+							cl.SetAnthropicPtKey(account.ClaudePtKey)
+						} else if systemClient != nil && systemClient.PtKey != "" && systemClient.PtKey != "placeholder" && systemClient.UserID == account.UserID {
 							cl.SetAnthropicPtKey(systemClient.PtKey)
 						}
 						cl.SetTimeout(time.Duration(timeout) * time.Second)
@@ -151,7 +153,9 @@ var serveCmd = &cobra.Command{
 					}
 					if account, _ := s.GetAccount(apiKey); account != nil {
 						cl := joycode.NewClient(account.PtKey, account.UserID)
-						if systemClient != nil && systemClient.PtKey != "" && systemClient.PtKey != "placeholder" && systemClient.UserID == account.UserID {
+						if account.ClaudePtKey != "" {
+							cl.SetAnthropicPtKey(account.ClaudePtKey)
+						} else if systemClient != nil && systemClient.PtKey != "" && systemClient.PtKey != "placeholder" && systemClient.UserID == account.UserID {
 							cl.SetAnthropicPtKey(systemClient.PtKey)
 						}
 						cl.SetTimeout(time.Duration(timeout) * time.Second)
@@ -160,7 +164,9 @@ var serveCmd = &cobra.Command{
 				}
 				if account, _ := s.GetDefaultAccount(); account != nil {
 					cl := joycode.NewClient(account.PtKey, account.UserID)
-					if systemClient != nil && systemClient.PtKey != "" && systemClient.PtKey != "placeholder" && systemClient.UserID == account.UserID {
+					if account.ClaudePtKey != "" {
+						cl.SetAnthropicPtKey(account.ClaudePtKey)
+					} else if systemClient != nil && systemClient.PtKey != "" && systemClient.PtKey != "placeholder" && systemClient.UserID == account.UserID {
 						cl.SetAnthropicPtKey(systemClient.PtKey)
 					}
 					cl.SetTimeout(time.Duration(timeout) * time.Second)
@@ -315,6 +321,9 @@ func requestLogMiddleware(next http.Handler, s *store.Store) http.Handler {
 		r = store.InitTokenUsage(r)
 		r = store.InitModel(r)
 		r = store.InitAccountModel(r)
+		r = store.InitUpstreamError(r)
+		r = store.InitUpstreamRequest(r)
+		r = store.InitUpstreamResponse(r)
 
 		// Assign request ID for log correlation
 		reqID := atomic.AddUint64(&requestCounter, 1)
@@ -406,8 +415,11 @@ func requestLogMiddleware(next http.Handler, s *store.Store) http.Handler {
 			if rw.statusCode >= 400 {
 				reqID := atomic.AddUint64(&requestCounter, 1)
 				errMsg = fmt.Sprintf("HTTP %d on %s %s", rw.statusCode, r.Method, path)
+				if upstreamErr := strings.TrimSpace(store.GetUpstreamError(r)); upstreamErr != "" {
+					errMsg = fmt.Sprintf("%s\n\nUpstream raw error:\n%s", errMsg, upstreamErr)
+				}
 				if body := strings.TrimSpace(rw.body.String()); body != "" {
-					errMsg = fmt.Sprintf("%s\n%s", errMsg, body)
+					errMsg = fmt.Sprintf("%s\n\nProxy response:\n%s", errMsg, body)
 				}
 				slog.Error("proxy error response",
 					"request_id", reqID,
@@ -424,12 +436,14 @@ func requestLogMiddleware(next http.Handler, s *store.Store) http.Handler {
 			var inTk, outTk int
 			inTk, outTk = store.GetTokenUsage(r)
 			resolvedModel := store.GetModel(r)
-				if resolvedModel != "" {
-					model = resolvedModel
-				}
-				if s.GetSetting("enable_request_logging") != "false" {
-					go s.LogRequest(apiKey, model, path, isStream, rw.statusCode, latency, errMsg, inTk, outTk)
-				}
+			if resolvedModel != "" {
+				model = resolvedModel
+			}
+			if s.GetSetting("enable_request_logging") != "false" {
+				upstreamRequest := store.GetUpstreamRequest(r)
+				upstreamResponse := store.GetUpstreamResponse(r)
+				go s.LogRequest(apiKey, model, path, isStream, rw.statusCode, latency, errMsg, upstreamRequest, upstreamResponse, inTk, outTk)
+			}
 		}
 	})
 }

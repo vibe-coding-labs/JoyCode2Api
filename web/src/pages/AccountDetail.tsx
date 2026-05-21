@@ -1,6 +1,6 @@
 import React, { useEffect, useState } from 'react';
 import {
-  Alert, Card, Row, Col, Statistic, Typography, Spin, Tag, Select, Button,
+  Card, Row, Col, Statistic, Typography, Spin, Tag, Select, Button,
   message, Space, Table, Badge, Segmented, Popconfirm, Tooltip, Divider,
 } from 'antd';
 import {
@@ -23,17 +23,17 @@ import CommandTooltip from '../components/CommandTooltip';
 
 const BUILTIN_MODELS = [
   { label: 'JoyAI-Code（推荐）', value: 'JoyAI-Code' },
-  { label: 'Claude-Opus-4.7', value: 'Claude-Opus-4.7' },
+  { label: 'MiniMax-M2.7', value: 'MiniMax-M2.7' },
+  { label: 'Kimi-K2.6', value: 'Kimi-K2.6' },
   { label: 'GLM-5.1', value: 'GLM-5.1' },
   { label: 'GLM-5', value: 'GLM-5' },
-  { label: 'GLM-4.7', value: 'GLM-4.7' },
-  { label: 'Kimi-K2.6', value: 'Kimi-K2.6' },
-  { label: 'Kimi-K2.5', value: 'Kimi-K2.5' },
-  { label: 'MiniMax-M2.7', value: 'MiniMax-M2.7' },
+  { label: 'GLM-5-jcloud', value: 'GLM-5-jcloud' },
   { label: 'Doubao-Seed-2.0-pro', value: 'Doubao-Seed-2.0-pro' },
+  { label: 'Claude-Opus-4.7', value: 'Claude-Opus-4.7' },
+  { label: 'Claude-Sonnet-4.6', value: 'Claude-Sonnet-4.6' },
+  { label: 'Claude-Opus-4.6', value: 'Claude-Opus-4.6' },
+  { label: 'GPT-5.3-codex', value: 'GPT-5.3-codex' },
 ];
-
-const isClaudeModel = (model?: string) => model === 'Claude-Opus-4.7';
 
 const PIE_COLORS = ['#00b578', '#36cfc9', '#73d13d', '#95de64', '#1890ff', '#13c2c2', '#eb2f96', '#fa8c16'];
 
@@ -93,6 +93,52 @@ const buildCodexCmd = (apiKey: string, model = 'GLM-5.1') => [
   `codex`,
 ].join('\n');
 
+const keyLabel = (set: boolean, suffix?: string) => {
+  if (!set) return '未配置';
+  return suffix ? `已配置 · ...${suffix}` : '已配置';
+};
+
+const stringifyValue = (value: unknown) => {
+  if (value === undefined || value === null || value === '') return '-';
+  if (typeof value === 'boolean') return value ? '是' : '否';
+  if (Array.isArray(value)) return `${value.length} 项`;
+  if (typeof value === 'object') return JSON.stringify(value);
+  return String(value);
+};
+
+const getMessageCount = (payload: Record<string, unknown>) => {
+  const messages = payload.messages;
+  if (Array.isArray(messages)) return messages.length;
+  const input = payload.input;
+  if (Array.isArray(input)) return input.length;
+  if (typeof input === 'string' && input) return 1;
+  return undefined;
+};
+
+const extractRequestSummary = (raw: string) => {
+  if (!raw) return [];
+  try {
+    const payload = JSON.parse(raw) as Record<string, unknown>;
+    const rows: Array<[string, unknown]> = [
+      ['实际请求模型', payload.model],
+      ['协议模型名', payload.modelName],
+      ['适配协议', payload.adapter || payload.protocol],
+      ['流式', payload.stream],
+      ['租户', payload.tenant],
+      ['用户 ID', payload.userId],
+      ['会话 ID', payload.sessionId],
+      ['Chat ID', payload.chatId],
+      ['Request ID', payload.requestId],
+      ['消息数量', getMessageCount(payload)],
+      ['最大输出', payload.max_tokens ?? payload.max_output_tokens],
+      ['温度', payload.temperature],
+    ];
+    return rows.filter(([, value]) => value !== undefined && value !== null && value !== '');
+  } catch {
+    return [['原始预览', raw.length > 500 ? `${raw.slice(0, 500)}...` : raw]];
+  }
+};
+
 const copyCmd = async (text: string, label: string) => {
   try {
     if (navigator.clipboard?.writeText) {
@@ -112,6 +158,25 @@ const copyCmd = async (text: string, label: string) => {
   }
 };
 
+const copyText = async (text: string, label: string) => {
+  try {
+    if (navigator.clipboard?.writeText) {
+      await navigator.clipboard.writeText(text);
+    } else {
+      const ta = document.createElement('textarea');
+      ta.value = text;
+      ta.style.cssText = 'position:fixed;left:-9999px';
+      document.body.appendChild(ta);
+      ta.select();
+      document.execCommand('copy');
+      document.body.removeChild(ta);
+    }
+    message.success(`${label}已复制到剪贴板`);
+  } catch {
+    message.error('复制失败');
+  }
+};
+
 const AccountDetail: React.FC = () => {
   const { userId } = useParams<{ userId: string }>();
   const navigate = useNavigate();
@@ -122,6 +187,8 @@ const AccountDetail: React.FC = () => {
   const [loading, setLoading] = useState(true);
   const [modelLoading, setModelLoading] = useState(false);
   const [savingModel, setSavingModel] = useState(false);
+  const [refreshingLogs, setRefreshingLogs] = useState(false);
+  const [copyingCredential, setCopyingCredential] = useState(false);
   const [logFilter, setLogFilter] = useState<string>('all');
   const [activeSessions, setActiveSessions] = useState(0);
 
@@ -155,6 +222,36 @@ const AccountDetail: React.FC = () => {
       // fallback to builtin
     } finally {
       setModelLoading(false);
+    }
+  };
+
+  const refreshLogs = async () => {
+    setRefreshingLogs(true);
+    try {
+      const [statsData, logsData] = await Promise.all([
+        api.getAccountStats(decodedKey),
+        api.getAccountLogs(decodedKey, 500),
+      ]);
+      setStats(statsData);
+      setLogs(logsData.logs || []);
+      message.success('请求日志已更新');
+    } catch (e: unknown) {
+      message.error(e instanceof Error ? e.message : '刷新请求日志失败');
+    } finally {
+      setRefreshingLogs(false);
+    }
+  };
+
+  const copyCredential = async () => {
+    if (!account) return;
+    setCopyingCredential(true);
+    try {
+      const result = await api.getAccountCredential(account.user_id);
+      await copyText(result.credential, '授权凭证');
+    } catch (e: unknown) {
+      message.error(e instanceof Error ? e.message : '复制授权凭证失败');
+    } finally {
+      setCopyingCredential(false);
     }
   };
 
@@ -305,14 +402,40 @@ const AccountDetail: React.FC = () => {
             <Typography.Title level={4} style={{ margin: 0 }}>{accountDisplayName(account)}</Typography.Title>
             {account.is_default && <Tag color="blue">默认</Tag>}
           </div>
-          <Typography.Text type="secondary" style={{ fontSize: 12 }}>
-            {account.user_id} · 创建于 {account.created_at?.slice(0, 10) || '-'}
-          </Typography.Text>
+          <Space size={4} wrap>
+            <Typography.Text type="secondary" style={{ fontSize: 12 }}>
+              {account.user_id} · 创建于 {account.created_at?.slice(0, 10) || '-'}
+            </Typography.Text>
+            <Button
+              type="text"
+              size="small"
+              icon={<CopyOutlined />}
+              onClick={() => copyText(account.user_id, '用户 ID')}
+            />
+          </Space>
           <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginTop: 4 }}>
             <Typography.Text type="secondary" style={{ fontSize: 12 }}>Token:</Typography.Text>
-            <Typography.Text code copyable style={{ fontSize: 11 }}>
+            <Typography.Text code style={{ fontSize: 11 }}>
               {account.api_token}
             </Typography.Text>
+            <Button
+              type="text"
+              size="small"
+              icon={<CopyOutlined />}
+              onClick={() => copyText(account.api_token, 'API Token')}
+            />
+          </div>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginTop: 6, flexWrap: 'wrap' }}>
+            <Typography.Text type="secondary" style={{ fontSize: 12 }}>授权凭证:</Typography.Text>
+            <Tag color={account.claude_pt_key_set ? 'blue' : 'orange'} style={{ marginInlineEnd: 0 }}>{keyLabel(account.claude_pt_key_set, account.claude_pt_key_suffix)}</Tag>
+            <Button
+              type="text"
+              size="small"
+              icon={<CopyOutlined />}
+              disabled={!account.claude_pt_key_set && !account.pt_key_set}
+              loading={copyingCredential}
+              onClick={copyCredential}
+            />
           </div>
           <div style={{ marginTop: 6 }}>
             {activeSessions > 0 ? (
@@ -343,11 +466,6 @@ const AccountDetail: React.FC = () => {
             disabled={savingModel}
             size="small"
           />
-          {isClaudeModel(account.default_model) && (
-            <Tooltip title="Claude 模型需要本机登录 JoyCode IDE">
-              <InfoCircleOutlined style={{ color: '#faad14' }} />
-            </Tooltip>
-          )}
           <Button size="small" onClick={async () => {
             try {
               await api.renewToken(decodedKey);
@@ -381,15 +499,6 @@ const AccountDetail: React.FC = () => {
       </div>
 
       {/* Quick start commands */}
-      {isClaudeModel(account.default_model) && (
-        <Alert
-          type="warning"
-          showIcon
-          message="Claude 模型需要 JoyCode IDE 登录态"
-          description="请确保本机 JoyCode IDE 已登录，否则 Claude 模型无法使用。"
-          style={{ marginBottom: 16 }}
-        />
-      )}
       <Card size="small" style={{ marginBottom: 16 }}>
         <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 10 }}>
           <Typography.Text strong style={{ fontSize: 13 }}>
@@ -708,16 +817,26 @@ const AccountDetail: React.FC = () => {
         }
         size="small"
         extra={
-          <Segmented
-            size="small"
-            value={logFilter}
-            onChange={(v) => setLogFilter(v as string)}
-            options={[
-              { label: '全部', value: 'all' },
-              { label: '流式', value: 'stream' },
-              { label: '错误', value: 'errors' },
-            ]}
-          />
+          <Space size={8}>
+            <Button
+              size="small"
+              icon={<ReloadOutlined />}
+              loading={refreshingLogs}
+              onClick={refreshLogs}
+            >
+              查询最新
+            </Button>
+            <Segmented
+              size="small"
+              value={logFilter}
+              onChange={(v) => setLogFilter(v as string)}
+              options={[
+                { label: '全部', value: 'all' },
+                { label: '流式', value: 'stream' },
+                { label: '错误', value: 'errors' },
+              ]}
+            />
+          </Space>
         }
       >
         <Table
@@ -752,6 +871,59 @@ const AccountDetail: React.FC = () => {
                       fontFamily: 'monospace',
                     }}>
                       {record.error_message || `HTTP ${record.status_code}`}
+                    </pre>
+                  </div>
+                )}
+                {record.upstream_request && (
+                  <div style={{
+                    marginBottom: 10,
+                    padding: '10px 12px',
+                    border: '1px solid #d9d9d9',
+                    borderRadius: 6,
+                    background: '#fafafa',
+                  }}>
+                    <Typography.Text strong style={{ display: 'block', marginBottom: 6 }}>
+                      JoyCode 请求入参
+                    </Typography.Text>
+                    <div style={{
+                      display: 'grid',
+                      gridTemplateColumns: '120px minmax(0, 1fr)',
+                      gap: '6px 12px',
+                      fontSize: 12,
+                    }}>
+                      {extractRequestSummary(record.upstream_request).map(([label, value]) => (
+                        <React.Fragment key={label}>
+                          <Typography.Text type="secondary">{label}</Typography.Text>
+                          <Typography.Text code={label.endsWith('ID') || label === 'Chat ID'} style={{ wordBreak: 'break-word' }}>
+                            {stringifyValue(value)}
+                          </Typography.Text>
+                        </React.Fragment>
+                      ))}
+                    </div>
+                  </div>
+                )}
+                {record.upstream_response && (
+                  <div style={{
+                    marginBottom: 10,
+                    padding: '10px 12px',
+                    border: '1px solid #d9d9d9',
+                    borderRadius: 6,
+                    background: '#fbfbfb',
+                  }}>
+                    <Typography.Text strong style={{ display: 'block', marginBottom: 6 }}>
+                      JoyCode 原始返回
+                    </Typography.Text>
+                    <pre style={{
+                      margin: 0,
+                      maxHeight: 420,
+                      overflow: 'auto',
+                      whiteSpace: 'pre-wrap',
+                      wordBreak: 'break-word',
+                      fontSize: 12,
+                      lineHeight: 1.6,
+                      fontFamily: 'monospace',
+                    }}>
+                      {record.upstream_response}
                     </pre>
                   </div>
                 )}

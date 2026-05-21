@@ -104,8 +104,39 @@ func (s *Server) handleModels(w http.ResponseWriter, r *http.Request) {
 	models, err := s.getClient(r).ListModels()
 	if err != nil {
 		slog.Error("list models upstream error", "error", err)
-		writeError(w, 500, err.Error())
+		writeJSON(w, 200, TranslateModels(modelInfosFromNames(joycode.Models)))
 		return
 	}
-	writeJSON(w, 200, TranslateModels(models))
+	writeJSON(w, 200, TranslateModels(mergeModelInfos(models, joycode.Models)))
+}
+
+func mergeModelInfos(remote []joycode.ModelInfo, builtin []string) []joycode.ModelInfo {
+	seen := make(map[string]bool, len(remote)+len(builtin))
+	result := make([]joycode.ModelInfo, 0, len(remote)+len(builtin))
+	for _, m := range remote {
+		id := m.ModelID
+		if id == "" {
+			id = m.Label
+		}
+		if id == "" {
+			continue
+		}
+		seen[id] = true
+		result = append(result, m)
+	}
+	for _, name := range builtin {
+		if seen[name] {
+			continue
+		}
+		result = append(result, joycode.ModelInfo{Label: name, ModelID: name})
+	}
+	return result
+}
+
+func modelInfosFromNames(models []string) []joycode.ModelInfo {
+	result := make([]joycode.ModelInfo, 0, len(models))
+	for _, name := range models {
+		result = append(result, joycode.ModelInfo{Label: name, ModelID: name})
+	}
+	return result
 }

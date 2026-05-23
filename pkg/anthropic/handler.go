@@ -142,8 +142,9 @@ func (h *Handler) handleNonStream(w http.ResponseWriter, r *http.Request, req *M
 	}
 
 	if lastErr != nil {
-		if isContextLimitError(lastErr.Error()) {
-			writeAnthropicRequestError(w, "上下文长度超出模型限制。请压缩对话历史或开启新对话。原始错误: "+lastErr.Error())
+		errMsg := lastErr.Error()
+		if isContextLimitError(errMsg) {
+			writeAnthropicRequestError(w, "上下文长度超出模型限制。请压缩对话历史或开启新对话。原始错误: "+errMsg)
 			return
 		}
 		if isTimeoutError(lastErr) {
@@ -151,7 +152,12 @@ func (h *Handler) handleNonStream(w http.ResponseWriter, r *http.Request, req *M
 			writeAnthropicError(w, 504, "上游服务响应超时，请稍后重试。如果问题持续，请尝试减少上下文长度或开启新对话。")
 			return
 		}
-		writeAnthropicError(w, 500, lastErr.Error())
+		if strings.Contains(errMsg, "content_filter") || strings.Contains(errMsg, "SENSITIVE_CONTENT") {
+			reqLog(r).Warn("upstream content_filter (non-stream), returning detailed error")
+			writeAnthropicError(w, 400, extractSensitiveDetail(errMsg))
+			return
+		}
+		writeAnthropicError(w, 500, errMsg)
 		return
 	}
 	resp := TranslateResponse(jcResp, req.Model)
@@ -247,9 +253,9 @@ func (h *Handler) handleStream(w http.ResponseWriter, r *http.Request, req *Mess
 			writeAnthropicError(w, 504, "上游服务响应超时，请稍后重试。如果问题持续，请尝试减少上下文长度或开启新对话。")
 			return
 		}
-		if strings.Contains(errMsg, "content_filter") {
-			reqLog(r).Warn("upstream content_filter (stream) after retries, returning friendly error")
-			writeAnthropicError(w, 400, "上游模型的内容安全审查触发了过滤，请尝试修改提问方式或简化输入内容后重试。")
+		if strings.Contains(errMsg, "content_filter") || strings.Contains(errMsg, "SENSITIVE_CONTENT") {
+			reqLog(r).Warn("upstream content_filter (stream), returning detailed error")
+			writeAnthropicError(w, 400, extractSensitiveDetail(errMsg))
 			return
 		}
 		reqLog(r).Error("stream failed after retries", "error", errMsg)
@@ -883,6 +889,10 @@ func (h *Handler) connectStreamWithRetry(r *http.Request, jcBody map[string]inte
 			if isContextLimitError(dataContent) {
 				return nil, lastErr
 			}
+			// SENSITIVE_CONTENT errors are deterministic — retrying is pointless
+			if strings.Contains(dataContent, "SENSITIVE_CONTENT") {
+				return nil, lastErr
+			}
 			if attempt < maxRetries {
 				time.Sleep(time.Duration(attempt) * 500 * time.Millisecond)
 			}
@@ -893,11 +903,8 @@ func (h *Handler) connectStreamWithRetry(r *http.Request, jcBody map[string]inte
 		if isContentFilterChunk(dataContent) {
 			resp.Body.Close()
 			lastErr = fmt.Errorf("upstream content_filter triggered")
-			reqLog(r).Warn("content_filter detected in first chunk, retrying", "attempt", attempt, "max", maxRetries)
-			if attempt < maxRetries {
-				time.Sleep(time.Duration(attempt) * 500 * time.Millisecond)
-			}
-			continue
+			reqLog(r).Warn("content_filter detected in first chunk, not retrying")
+			return nil, lastErr
 		}
 
 		// Peek second line to detect content_filter with separate finish_reason
@@ -910,11 +917,8 @@ func (h *Handler) connectStreamWithRetry(r *http.Request, jcBody map[string]inte
 			if isContentFilterChunk(dataSecond) {
 				resp.Body.Close()
 				lastErr = fmt.Errorf("upstream content_filter triggered")
-				reqLog(r).Warn("content_filter detected in second chunk, retrying", "attempt", attempt, "max", maxRetries)
-				if attempt < maxRetries {
-					time.Sleep(time.Duration(attempt) * 500 * time.Millisecond)
-				}
-				continue
+				reqLog(r).Warn("content_filter detected in second chunk, not retrying")
+				return nil, lastErr
 			}
 		}
 
@@ -1002,6 +1006,21 @@ func truncate(s string, maxLen int) string {
 		return s
 	}
 	return s[:maxLen] + "..."
+}
+
+// extractSensitiveDetail parses the upstream error to extract the specific sensitive words.
+func extractSensitiveDetail(errMsg string) string {
+	if idx := strings.Index(errMsg, "sensitive contain:"); idx != -1 {
+		detail := errMsg[idx+len("sensitive contain:"):]
+		if end := strings.IndexByte(detail, '"'); end > 0 {
+			detail = detail[:end]
+		}
+		if end := strings.IndexByte(detail, '}'); end > 0 {
+			detail = detail[:end]
+		}
+		return "上游模型的内容安全审查触发了过滤，检测到敏感内容: " + detail + "。请尝试移除或替换相关内容后重试。"
+	}
+	return "上游模型的内容安全审查触发了过滤，请尝试修改提问方式或简化输入内容后重试。"
 }
 
 func writeAnthropicJSON(w http.ResponseWriter, code int, v interface{}) {

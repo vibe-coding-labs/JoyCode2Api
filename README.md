@@ -2,32 +2,40 @@
 
 # JoyCodeProxy
 
-**让 Claude Code、Cursor 直接用 JoyCode 的模型**
+**一个不太正经的协议翻译器**
+
+让 Claude Code、Cursor 这类工具能直接用上 JoyCode 的模型
 
 JoyAI-Code · GLM-5.1 · Kimi-K2.6 · MiniMax-M2.7 · Doubao-Seed-2.0-pro
 
 [![Go](https://img.shields.io/badge/Go-1.22+-00ADD8?style=flat&logo=go)](https://go.dev/)
 [![React](https://img.shields.io/badge/React-19-61DAFB?style=flat&logo=react)](https://react.dev/)
-[![License](https://img.shields.io/badge/License-MIT-green?style=flat)](./LICENSE)
+[![License](https://img.shields.io/badge/License-Apache_2.0-blue?style=flat)](./LICENSE)
 
 </div>
 
 ---
 
-说白了就一件事：JoyCode（京东的 AI 编程助手）有一堆不错的模型，但协议跟 Anthropic / OpenAI 不一样，Claude Code 这些工具接不上。JoyCodeProxy 就是在中间做个翻译，改两个环境变量就能用了。
+## 起因
+
+事情是这样的：JoyCode（京东的 AI 编程助手）里面有一些不错的模型，GLM、Kimi、MiniMax、Doubao 这些都有。但它的 API 协议跟 Anthropic 和 OpenAI 的不一样，所以 Claude Code、Cursor 这些主流编程工具接不上。
+
+JoyCodeProxy 就是在中间做了一个翻译层，把协议对齐了。改两个环境变量，Claude Code 就能直接用 JoyCode 的模型了。
 
 ```
 Claude Code / Cursor / Windsurf  →  JoyCodeProxy  →  JoyCode API
                                     (协议翻译)
 ```
 
-## 长什么样
+说白了就这点事，没有多复杂。做这个东西初衷是学习 Go 和了解 API 协议的差异，顺便给自己用着方便。
 
-自带一个管理界面，账号、用量、配置都在上面搞。
+## 界面
+
+自带一个管理后台，账号、用量、配置都能在上面看和改。
 
 <div align="center">
-<img src="data/imgs/dashboard.png" alt="Dashboard 数据概览" width="720" />
-<p><sub>数据概览 — 请求量、Token 消耗、延迟、模型分布</sub></p>
+<img src="data/imgs/dashboard.png" alt="Dashboard" width="720" />
+<p><sub>数据概览 — 请求量、Token 消耗、延迟统计、模型分布</sub></p>
 </div>
 
 <div align="center">
@@ -42,22 +50,22 @@ Claude Code / Cursor / Windsurf  →  JoyCodeProxy  →  JoyCode API
 
 <div align="center">
 <img src="data/imgs/settings.png" alt="系统设置" width="720" />
-<p><sub>系统设置 — 默认模型、超时、日志保留，改完马上生效</sub></p>
+<p><sub>系统设置 — 默认模型、超时时间、日志保留，改完马上生效</sub></p>
 </div>
 
-## 能干什么
+## 能做什么
 
-- **双协议都能接** — Anthropic Messages API 和 OpenAI Chat Completions API 都支持，Claude Code 和 Cursor 各走各的
-- **Tool Use 正常工作** — Claude Code 的工具调用（读写文件、跑命令那些）完整翻译，不影响正常使用
-- **流式输出** — SSE 流式，打字机效果，实时出结果
-- **模型随便选** — JoyAI-Code、GLM-5.1、GLM-5、GLM-4.7、Kimi-K2.6、Kimi-K2.5、MiniMax-M2.7、Doubao-Seed-2.0-pro 都能用
-- **多账号** — Dashboard 上扫码加多个 JD 账号，每个账号有自己的 API Key
-- **智能截断** — 对话聊太长了会自动截断早期消息，不会卡死，`/compact` 也能正常工作
-- **单文件部署** — 前端打包进 Go 二进制，丢一个文件上去就能跑，Docker 也行
+- **Anthropic + OpenAI 双协议** — 同时兼容 Anthropic Messages API 和 OpenAI Chat Completions API，Claude Code 和 Cursor 各走各的通道
+- **Tool Use 完整翻译** — Claude Code 的工具调用（读写文件、执行命令等）完整映射，不影响正常使用
+- **SSE 流式输出** — 实时流式返回，打字机效果
+- **多模型可选** — JoyAI-Code、GLM-5.1、GLM-5、GLM-4.7、Kimi-K2.6、Kimi-K2.5、MiniMax-M2.7、Doubao-Seed-2.0-pro
+- **多账号管理** — Dashboard 上扫码添加多个 JD 账号，每个账号有独立的 API Key
+- **智能上下文截断** — 对话过长时自动截断早期消息，不会卡死，`/compact` 正常工作
+- **单文件部署** — 前端打包进 Go 二进制，丢一个文件就能跑，也支持 Docker
 
-## 怎么用
+## 怎么跑起来
 
-### 先构建
+### 构建
 
 需要 Go 1.22+ 和 Node.js 18+。
 
@@ -65,28 +73,28 @@ Claude Code / Cursor / Windsurf  →  JoyCodeProxy  →  JoyCode API
 # 先构建前端
 cd web && npm install && npm run build && cd ..
 
-# 再构建后端（前端会自动嵌进去）
+# 再构建后端（前端会自动嵌入）
 go build -o joycode_proxy_bin ./cmd/JoyCodeProxy/
 ```
 
-不想装环境的话，Docker 也行：
+或者用 Docker：
 
 ```bash
 docker build -t joycode-proxy .
 docker run -p 34891:34891 joycode-proxy
 ```
 
-### 跑起来
+### 启动
 
 ```bash
 ./joycode_proxy_bin serve
 ```
 
-默认监听 `0.0.0.0:34891`。macOS 第一次启动会自动从本地 JoyCode 客户端读凭据，不用手动配。
+默认监听 `0.0.0.0:34891`。macOS 首次启动会自动从本地 JoyCode 客户端读取凭据，不需要手动配。
 
 ### 接到 Claude Code
 
-就改两个环境变量：
+改两个环境变量就行：
 
 ```bash
 export ANTHROPIC_BASE_URL=http://localhost:34891
@@ -95,11 +103,9 @@ export ANTHROPIC_API_KEY=joycode
 claude
 ```
 
-完事，直接用。
-
 ### 多账号
 
-打开 `http://localhost:34891`，用 JD App 扫码加账号。每个账号会生成一个独立的 API Key：
+打开 `http://localhost:34891`，用 JD App 扫码添加账号。每个账号会生成一个独立的 API Key：
 
 ```bash
 export ANTHROPIC_API_KEY=sk-joy-xxxx
@@ -108,13 +114,13 @@ claude
 
 ## API 端点
 
-| 路径 | 干嘛的 |
-|------|--------|
+| 路径 | 说明 |
+|------|------|
 | `POST /v1/messages` | Anthropic Messages API，Claude Code 走这个 |
 | `POST /v1/chat/completions` | OpenAI Chat Completions API，Cursor 走这个 |
 | `POST /v1/web-search` | 网页搜索 |
 | `POST /v1/rerank` | 文档重排序 |
-| `GET /v1/models` | 拉可用模型列表 |
+| `GET /v1/models` | 拉取可用模型列表 |
 | `GET /health` | 健康检查 |
 | `GET /` | Dashboard 管理界面 |
 
@@ -126,11 +132,21 @@ pkg/anthropic/       Anthropic 协议翻译（请求、响应、SSE 流式）
 pkg/openai/          OpenAI 协议翻译
 pkg/joycode/         JoyCode API 客户端
 pkg/auth/            凭据读取、JD 扫码登录
-pkg/store/           SQLite（账号、设置、请求日志）
+pkg/store/           SQLite 存储（账号、设置、请求日志）
 pkg/dashboard/       Dashboard API
 web/                 前端（React + Ant Design）
 ```
 
+## 免责声明
+
+本项目仅供**学习和技术研究**使用，目的是理解 API 协议转换的实现方式。
+
+- 本项目**不是** JoyCode 的官方产品，与京东、JoyCode 团队没有任何关系
+- 使用本项目前，请确保你已了解并遵守 JoyCode 的服务条款
+- 请勿将本项目用于任何违反服务条款或法律法规的用途
+- 因使用不当造成的任何后果，由使用者自行承担
+- 如果你觉得 JoyCode 的模型好用，建议去[ JoyCode 官方](https://joycode.jd.com/)支持正版
+
 ## 许可证
 
-MIT
+Apache 2.0

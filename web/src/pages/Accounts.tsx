@@ -300,9 +300,12 @@ const Accounts: React.FC = () => {
       title: '账户名',
       dataIndex: 'user_id',
       key: 'user_id',
-      width: 120,
+      width: 200,
+      ellipsis: true,
       render: (_: unknown, record: Account) => (
-        <Typography.Text strong>{accountDisplayName(record)}</Typography.Text>
+        <Tooltip title={accountDisplayName(record)} placement="topLeft">
+          <Typography.Text strong>{accountDisplayName(record)}</Typography.Text>
+        </Tooltip>
       ),
     },
     {

@@ -23,10 +23,12 @@ func minInt(a, b int) int {
 }
 
 const (
-	qrShowURL   = "https://qr.m.jd.com/show?appid=133&size=147&t=%d"
-	qrCheckURL  = "https://qr.m.jd.com/check?appid=133&token=%s&callback=jsonpCallback&_=%d"
-	qrValidURL  = "https://passport.jd.com/uc/qrCodeTicketValidation?t=%s"
-	jdUserAgent = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/133.0.0.0 Safari/537.36"
+	qrShowURL        = "https://qr.m.jd.com/show?appid=133&size=147&t=%d"
+	qrCheckURL       = "https://qr.m.jd.com/check?appid=133&token=%s&callback=jsonpCallback&_=%d"
+	qrValidURL       = "https://passport.jd.com/uc/qrCodeTicketValidation?t=%s"
+	jdUserAgent      = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/133.0.0.0 Safari/537.36"
+	qrSessionTTL     = 3 * time.Minute
+	qrCleanupInterval = 1 * time.Minute
 )
 
 // QRSession holds the state for an in-progress QR login session.
@@ -56,12 +58,32 @@ func (e *QRVerifyNeededError) Error() string {
 }
 
 var (
-	qrSessions   = make(map[string]*QRSession)
-	qrSessionsMu sync.Mutex
+	qrSessions    = make(map[string]*QRSession)
+	qrSessionsMu  sync.Mutex
+	qrJanitorOnce sync.Once
 )
+
+func startQRSessionJanitor() {
+	go func() {
+		ticker := time.NewTicker(qrCleanupInterval)
+		defer ticker.Stop()
+		for range ticker.C {
+			qrSessionsMu.Lock()
+			now := time.Now()
+			for id, s := range qrSessions {
+				if now.Sub(s.CreatedAt) > qrSessionTTL {
+					delete(qrSessions, id)
+					slog.Debug("qr session janitor removed expired session", "session_id", id)
+				}
+			}
+			qrSessionsMu.Unlock()
+		}
+	}()
+}
 
 // QRInit starts a new QR code login session. Returns session ID and QR code PNG base64.
 func QRInit() (sessionID, qrImageBase64 string, err error) {
+	qrJanitorOnce.Do(startQRSessionJanitor)
 	jar, err := cookiejar.New(nil)
 	if err != nil {
 		return "", "", fmt.Errorf("create cookie jar: %w", err)
@@ -114,7 +136,7 @@ func QRPollStatus(sessionID string) (status string, result *QRLoginResult, err e
 	if !ok {
 		return "expired", nil, fmt.Errorf("session not found")
 	}
-	if time.Since(session.CreatedAt) > 3*time.Minute {
+	if time.Since(session.CreatedAt) > qrSessionTTL {
 		QRCleanup(sessionID)
 		return "expired", nil, nil
 	}

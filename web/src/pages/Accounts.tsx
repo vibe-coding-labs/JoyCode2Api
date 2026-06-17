@@ -164,7 +164,6 @@ const Accounts: React.FC = () => {
   const [oauthSubmitting, setOauthSubmitting] = useState(false);
   const oauthCountRef = React.useRef(0);
   const oauthPollRef = React.useRef<ReturnType<typeof setInterval> | null>(null);
-  const oauthFallbackRef = React.useRef<ReturnType<typeof setTimeout> | null>(null);
   const selectedModel = Form.useWatch('default_model', form);
 
   const sensors = useSensors(
@@ -495,7 +494,10 @@ const Accounts: React.FC = () => {
                 oauthCountRef.current = currentCount;
                 setOauthModalOpen(true);
                 setOauthWaiting(true);
-                setOauthFallback(false);
+                // Show the manual-paste path immediately: Docker/remote
+                // deployments never receive the localhost callback, so they
+                // must paste it themselves rather than wait for auto-detect.
+                setOauthFallback(true);
                 setOauthInput('');
                 // Poll accounts to detect callback completion (local deployment)
                 if (oauthPollRef.current) clearInterval(oauthPollRef.current);
@@ -505,7 +507,6 @@ const Accounts: React.FC = () => {
                     if (data.length > oauthCountRef.current) {
                       // New account detected — callback succeeded
                       if (oauthPollRef.current) clearInterval(oauthPollRef.current);
-                      if (oauthFallbackRef.current) clearTimeout(oauthFallbackRef.current);
                       setOauthModalOpen(false);
                       setOauthWaiting(false);
                       setAccounts(data);
@@ -513,12 +514,6 @@ const Accounts: React.FC = () => {
                     }
                   } catch { /* ignore poll errors */ }
                 }, 3000);
-                // After 15s without callback, show paste fallback (remote deployment)
-                oauthFallbackRef.current = setTimeout(() => {
-                  if (oauthPollRef.current) clearInterval(oauthPollRef.current);
-                  setOauthWaiting(false);
-                  setOauthFallback(true);
-                }, 15000);
               } catch (e: unknown) {
                 message.error(e instanceof Error ? e.message : '获取登录链接失败');
               }
@@ -775,7 +770,6 @@ const Accounts: React.FC = () => {
         open={oauthModalOpen}
         onCancel={() => {
           if (oauthPollRef.current) clearInterval(oauthPollRef.current);
-          if (oauthFallbackRef.current) clearTimeout(oauthFallbackRef.current);
           setOauthModalOpen(false);
           setOauthWaiting(false);
           setOauthFallback(false);
@@ -817,23 +811,18 @@ const Accounts: React.FC = () => {
         okButtonProps={{ loading: oauthSubmitting }}
       >
         {oauthWaiting && (
-          <div style={{ textAlign: 'center', padding: '24px 0' }}>
-            <Spin size="large" />
-            <div style={{ marginTop: 16, fontSize: 15, color: '#666' }}>
-              等待授权完成...
-            </div>
-            <div style={{ marginTop: 8, fontSize: 13, color: '#999' }}>
-              请在新打开的 JoyCode 页面中完成登录授权
-            </div>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 12, color: '#666' }}>
+            <Spin />
+            <span style={{ fontSize: 13 }}>已打开授权页面，正在自动检测授权结果（本地部署适用）...</span>
           </div>
         )}
         {oauthFallback && (
           <>
             <Alert
-              type="warning"
+              type="info"
               showIcon
-              message="未检测到自动回调"
-              description="如果您已完成授权，浏览器会跳转到一个无法访问的页面。请复制该页面地址栏中的完整 URL 粘贴到下方，或直接粘贴 pt_key。"
+              message="完成授权后"
+              description="本地部署会自动检测并添加账号。若使用 Docker 或远程部署，浏览器会跳转到一个无法访问的 localhost 页面——这是正常现象：请复制该页面地址栏中的完整 URL 粘贴到下方，或直接粘贴 pt_key 后点击「提交授权」。"
               style={{ marginBottom: 12 }}
             />
             <Input.TextArea

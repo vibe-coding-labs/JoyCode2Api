@@ -574,6 +574,7 @@ func (h *Handler) handleAutoLogin(w http.ResponseWriter, r *http.Request) {
 	}
 
 	client := joycode.NewClient(creds.PtKey, creds.UserID)
+	client.SetColorContext(creds.ColorBaseURL, creds.MasterBaseURL, creds.Tenant, creds.LoginType, creds.OrgFullName)
 	userInfo, err := client.UserInfo()
 	if err != nil {
 		slog.Error("auto-login: userInfo request failed", "user_id", creds.UserID, "error", err)

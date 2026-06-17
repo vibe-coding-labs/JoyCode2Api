@@ -127,6 +127,7 @@ var serveCmd = &cobra.Command{
 				if systemClient != nil && systemClient.PtKey == "placeholder" {
 					if creds, err := auth.LoadFromSystem(); err == nil {
 						systemClient = joycode.NewClient(creds.PtKey, creds.UserID)
+						systemClient.SetColorContext(creds.ColorBaseURL, creds.MasterBaseURL, creds.Tenant, creds.LoginType, creds.OrgFullName)
 					}
 				}
 				apiKey := r.Header.Get("x-api-key")

@@ -3,25 +3,51 @@ package joycode
 import (
 	"bytes"
 	"compress/gzip"
+	"crypto/hmac"
 	"crypto/rand"
+	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"io"
 	"log/slog"
 	"net/http"
+	"net/url"
+	"strconv"
+	"strings"
 	"time"
 )
 
 const (
 	BaseURL       = "https://joycode-api.jd.com"
 	SaasBaseURL   = "http://joycode-api-saas.jd.com"
-	DefaultModel  = "JoyAI-Code"
-	ClientVersion = "2.4.5"
+	DefaultModel  = "JoyAI-Code-1.5"
+	ClientVersion = "2.7.5"
 	UserAgent     = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) " +
 		"AppleWebKit/537.36 (KHTML, like Gecko) " +
-		"JoyCode/2.4.5 Chrome/133.0.0.0 Electron/35.2.0 Safari/537.36"
+		"JoyCode/2.7.5 Chrome/133.0.0.0 Electron/35.2.0 Safari/537.36"
+
+	// color gateway 签名（逆向自 JoyCode 2.7.5 / joycoder-editor 3.8.57）
+	DefaultColorBaseURL = "https://api-ai.jd.com"
+	colorGatewayAppID   = "joycode_ide"
+	colorGatewayPath    = "/api"
+	colorHMACKey        = "0691a3f0b37b4a85aeb63ad0fc7db3ed"
 )
+
+// colorEndpoint 把旧 v1 路径映射到 (functionId, v2 路径)。
+// gateway 模式靠 query 的 functionId 路由；direct 模式用 v2 路径。
+type colorEndpoint struct {
+	functionID string
+	v2Path     string
+}
+
+var colorEndpoints = map[string]colorEndpoint{
+	"/api/saas/openai/v1/chat/completions": {"chat_completions", "/api/saas/openai/v2/chat/completions"},
+	"/api/saas/models/v1/modelList":        {"joycode_modelList", "/api/saas/models/v2/modelList"},
+	"/api/saas/openai/v1/web-search":       {"web_search", "/api/saas/openai/v2/web-search"},
+	"/api/saas/user/v1/userInfo":           {"joycode_userInfo", "/api/saas/user/v2/userInfo"},
+	"/api/saas/anthropic/v1/messages":      {"anthropic_completions", "/api/saas/anthropic/v1/messages"},
+}
 
 var Models = []string{
 	"JoyAI-Code",
@@ -40,6 +66,11 @@ type Client struct {
 	AnthropicPtKey string
 	UserID         string
 	SessionID      string
+	ColorBaseURL   string
+	MasterBaseURL  string
+	Tenant         string
+	LoginType      string
+	OrgFullName    string
 	httpClient     *http.Client
 }
 
@@ -60,10 +91,11 @@ func (r *gzipReadCloser) Close() error {
 
 func NewClient(ptKey, userID string) *Client {
 	return &Client{
-		PtKey:      ptKey,
-		UserID:     userID,
-		SessionID:  newHexID(),
-		httpClient: &http.Client{Timeout: 30 * time.Minute},
+		PtKey:        ptKey,
+		UserID:       userID,
+		SessionID:    newHexID(),
+		ColorBaseURL: DefaultColorBaseURL,
+		httpClient:   &http.Client{Timeout: 30 * time.Minute},
 	}
 }
 
@@ -84,22 +116,71 @@ func (c *Client) SetAnthropicPtKey(ptKey string) {
 	c.AnthropicPtKey = ptKey
 }
 
+// SetColorContext sets the color-gateway routing context from login credentials.
+// Empty colorBaseURL keeps the default gateway origin.
+func (c *Client) SetColorContext(colorBaseURL, masterBaseURL, tenant, loginType, orgFullName string) {
+	if colorBaseURL != "" {
+		c.ColorBaseURL = colorBaseURL
+	}
+	c.MasterBaseURL = masterBaseURL
+	c.Tenant = tenant
+	c.LoginType = loginType
+	c.OrgFullName = orgFullName
+}
+
 func newHexID() string {
 	b := make([]byte, 16)
 	rand.Read(b)
 	return hex.EncodeToString(b)
 }
 
+// colorSign 构造 color gateway 的 query 串与 HMAC 签名。
+// 规范串 = 参数按 key 排序后的 value 拼接（appid < functionId < t）。
+func colorSign(functionID string) (query, sign string) {
+	ts := strconv.FormatInt(time.Now().UnixMilli(), 10)
+	signStr := colorGatewayAppID + "&" + functionID + "&" + ts
+	mac := hmac.New(sha256.New, []byte(colorHMACKey))
+	mac.Write([]byte(signStr))
+	sign = hex.EncodeToString(mac.Sum(nil))
+	query = "appid=" + colorGatewayAppID + "&functionId=" + functionID + "&t=" + ts
+	return query, sign
+}
+
+// requestURL 根据登录态把端点解析为最终请求 URL。
+// 有 colorBaseURL → gateway 模式（带签名，functionId 路由）；否则 direct v2（无签名）。
+func (c *Client) requestURL(endpoint string) string {
+	ep, ok := colorEndpoints[endpoint]
+	if !ok {
+		// 未在 color 端点表中的旧端点（如已下线的 rerank），保持 direct 行为
+		return BaseURL + endpoint
+	}
+	if c.ColorBaseURL != "" {
+		if u, err := url.Parse(c.ColorBaseURL); err == nil && u.Host != "" {
+			query, sign := colorSign(ep.functionID)
+			return u.Scheme + "://" + u.Host + colorGatewayPath + "?" + query + "&sign=" + sign
+		}
+	}
+	base := c.MasterBaseURL
+	if base == "" {
+		base = BaseURL
+	}
+	return strings.TrimRight(base, "/") + ep.v2Path
+}
+
 func (c *Client) headers() http.Header {
+	loginType := c.LoginType
+	if loginType == "" {
+		loginType = "N_PIN_PC"
+	}
 	return http.Header{
 		"Content-Type":    {"application/json; charset=UTF-8"},
+		"source-type":     {"joycoder-ide"},
 		"ptKey":           {c.PtKey},
-		"loginType":       {"N_PIN_PC"},
+		"loginType":       {loginType},
 		"User-Agent":      {UserAgent},
 		"Accept":          {"*/*"},
-		"Accept-Encoding": {"gzip, deflate, br"},
+		"Accept-Encoding": {"gzip, deflate"},
 		"Accept-Language": {"zh-CN,zh;q=0.9,en;q=0.8"},
-		"Connection":      {"keep-alive"},
 	}
 }
 
@@ -108,29 +189,34 @@ func (c *Client) anthropicHeaders() http.Header {
 	if c.AnthropicPtKey != "" {
 		ptKey = c.AnthropicPtKey
 	}
+	loginType := c.LoginType
+	if loginType == "" {
+		loginType = "PIN_JD_CLOUD"
+	}
 	return http.Header{
 		"Content-Type":    {"application/json; charset=utf-8"},
+		"source-type":     {"joycoder-ide"},
 		"ptKey":           {ptKey},
-		"loginType":       {"PIN_JD_CLOUD"},
+		"loginType":       {loginType},
 		"User-Agent":      {UserAgent},
 		"Accept":          {"*/*"},
 		"Accept-Encoding": {"gzip, deflate"},
 		"Accept-Language": {"zh-CN,zh;q=0.9,en;q=0.8"},
-		"Connection":      {"keep-alive"},
 	}
 }
 
 func (c *Client) prepareBody(extra map[string]interface{}) map[string]interface{} {
+	tenant := c.Tenant
+	if tenant == "" {
+		tenant = "JOYCODE"
+	}
 	body := map[string]interface{}{
-		"tenant": "JOYCODE", "userId": c.UserID,
-		"client": "JoyCode", "clientVersion": ClientVersion,
-		"sessionId": c.SessionID,
-	}
-	if _, ok := extra["chatId"]; !ok {
-		body["chatId"] = newHexID()
-	}
-	if _, ok := extra["requestId"]; !ok {
-		body["requestId"] = newHexID()
+		"tenant":        tenant,
+		"orgFullName":   c.OrgFullName,
+		"userId":        c.UserID,
+		"client":        "JoyCode",
+		"clientVersion": ClientVersion,
+		"language":      "UNKNOWN",
 	}
 	for k, v := range extra {
 		body[k] = v
@@ -139,8 +225,13 @@ func (c *Client) prepareBody(extra map[string]interface{}) map[string]interface{
 }
 
 func (c *Client) prepareAnthropicBody(extra map[string]interface{}) map[string]interface{} {
+	tenant := c.Tenant
+	if tenant == "" {
+		tenant = "JD"
+	}
 	body := map[string]interface{}{
-		"tenant":        "JD",
+		"tenant":        tenant,
+		"orgFullName":   c.OrgFullName,
 		"userId":        c.UserID,
 		"client":        "JoyCode",
 		"clientVersion": ClientVersion,
@@ -159,7 +250,7 @@ func (c *Client) doPost(endpoint string, body map[string]interface{}) (*http.Res
 		slog.Error("marshal request body", "endpoint", endpoint, "error", err)
 		return nil, err
 	}
-	req, err := http.NewRequest("POST", BaseURL+endpoint, bytes.NewReader(data))
+	req, err := http.NewRequest("POST", c.requestURL(endpoint), bytes.NewReader(data))
 	if err != nil {
 		slog.Error("create request", "endpoint", endpoint, "error", err)
 		return nil, err
@@ -174,7 +265,7 @@ func (c *Client) doAnthropicPost(endpoint string, body map[string]interface{}) (
 		slog.Error("marshal anthropic request body", "endpoint", endpoint, "error", err)
 		return nil, err
 	}
-	req, err := http.NewRequest("POST", SaasBaseURL+endpoint, bytes.NewReader(data))
+	req, err := http.NewRequest("POST", c.requestURL(endpoint), bytes.NewReader(data))
 	if err != nil {
 		slog.Error("create anthropic request", "endpoint", endpoint, "error", err)
 		return nil, err
@@ -298,7 +389,7 @@ func (c *Client) ListModels() ([]ModelInfo, error) {
 func (c *Client) WebSearch(query string) ([]interface{}, error) {
 	body := map[string]interface{}{
 		"messages": []map[string]string{{"role": "user", "content": query}},
-		"stream": false, "model": "search_pro_jina", "language": "UNKNOWN",
+		"stream":   false, "model": "search_pro_jina", "language": "UNKNOWN",
 	}
 	resp, err := c.Post("/api/saas/openai/v1/web-search", body)
 	if err != nil {

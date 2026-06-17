@@ -13,14 +13,24 @@ import (
 
 // Credentials holds JoyCode authentication data.
 type Credentials struct {
-	PtKey  string
-	UserID string
+	PtKey         string
+	UserID        string
+	ColorBaseURL  string
+	MasterBaseURL string
+	Tenant        string
+	LoginType     string
+	OrgFullName   string
 }
 
 type stateData struct {
 	JoyCoderUser struct {
-		PtKey  string `json:"ptKey"`
-		UserID string `json:"userId"`
+		PtKey         string `json:"ptKey"`
+		UserID        string `json:"userId"`
+		ColorBaseURL  string `json:"colorBaseUrl"`
+		MasterBaseURL string `json:"masterBaseUrl"`
+		Tenant        string `json:"tenant"`
+		LoginType     string `json:"loginType"`
+		OrgFullName   string `json:"orgFullName"`
 	} `json:"joyCoderUser"`
 }
 
@@ -84,7 +94,12 @@ func loadFromStateDB(dbPath string) (*Credentials, error) {
 		return nil, fmt.Errorf("userId is empty in stored credentials\n  Please re-login to JoyCode IDE")
 	}
 	return &Credentials{
-		PtKey:  data.JoyCoderUser.PtKey,
-		UserID: data.JoyCoderUser.UserID,
+		PtKey:         data.JoyCoderUser.PtKey,
+		UserID:        data.JoyCoderUser.UserID,
+		ColorBaseURL:  data.JoyCoderUser.ColorBaseURL,
+		MasterBaseURL: data.JoyCoderUser.MasterBaseURL,
+		Tenant:        data.JoyCoderUser.Tenant,
+		LoginType:     data.JoyCoderUser.LoginType,
+		OrgFullName:   data.JoyCoderUser.OrgFullName,
 	}, nil
 }

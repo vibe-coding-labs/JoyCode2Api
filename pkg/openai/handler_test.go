@@ -43,7 +43,9 @@ func (rt redirectTransport) RoundTrip(req *http.Request) (*http.Response, error)
 // mockHandler returns an http.Handler that serves canned JoyCode API responses.
 func mockHandler(responses map[string]interface{}) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		resp, ok := responses[r.URL.Path]
+		// JoyCode 2.7 端点升 v2；mock 仍按 v1 path 注册，这里归一化 v2→v1。
+		path := strings.Replace(r.URL.Path, "/v2/", "/v1/", 1)
+		resp, ok := responses[path]
 		if !ok {
 			w.WriteHeader(404)
 			return
@@ -59,6 +61,8 @@ func mockHandler(responses map[string]interface{}) http.Handler {
 // given httptest.Server.
 func newMockClient(ts *httptest.Server) *joycode.Client {
 	c := joycode.NewClient("test-key", "test-user")
+	// 走 direct 模式（清空网关 colorBaseURL），让 mock 按 path 路由而非 /api?functionId=
+	c.ColorBaseURL = ""
 	c.SetHTTPClient(&http.Client{
 		Timeout:   10 * time.Second,
 		Transport: redirectTransport{target: ts.URL},

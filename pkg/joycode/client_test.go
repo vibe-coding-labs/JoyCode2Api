@@ -3,11 +3,15 @@ package joycode
 import (
 	"bytes"
 	"compress/gzip"
+	"crypto/hmac"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"reflect"
 	"regexp"
 	"strings"
@@ -83,7 +87,6 @@ func TestHeaders_ContainsRequiredFields(t *testing.T) {
 		"Accept",
 		"Accept-Encoding",
 		"Accept-Language",
-		"Connection",
 	}
 	for _, key := range canonical {
 		if v := h.Get(key); v == "" {
@@ -91,7 +94,7 @@ func TestHeaders_ContainsRequiredFields(t *testing.T) {
 		}
 	}
 	// Non-canonical headers stored via map literal; access directly.
-	nonCanonical := []string{"ptKey", "loginType"}
+	nonCanonical := []string{"ptKey", "loginType", "source-type"}
 	for _, key := range nonCanonical {
 		vals := h[key]
 		if len(vals) == 0 || vals[0] == "" {
@@ -118,7 +121,7 @@ func TestPrepareBody_DefaultFields(t *testing.T) {
 		"userId":        "user42",
 		"client":        "JoyCode",
 		"clientVersion": ClientVersion,
-		"sessionId":     c.SessionID,
+		"language":      "UNKNOWN",
 	}
 	for field, want := range defaults {
 		got, _ := body[field].(string)
@@ -128,26 +131,21 @@ func TestPrepareBody_DefaultFields(t *testing.T) {
 	}
 }
 
-func TestPrepareBody_ChatIdGenerated(t *testing.T) {
+func TestPrepareBody_NoLegacyTrackingFields(t *testing.T) {
+	// JoyCode 2.7 协议不再自动注入 chatId/requestId/sessionId（对齐真实客户端 customFetch）。
 	c := NewClient("k", "u")
 	body := c.prepareBody(map[string]interface{}{})
-	if body["chatId"] == nil || body["chatId"].(string) == "" {
-		t.Error("chatId should be auto-generated when not provided")
+	for _, key := range []string{"chatId", "requestId", "sessionId"} {
+		if _, ok := body[key]; ok {
+			t.Errorf("prepareBody should not auto-inject %q in 2.7 protocol", key)
+		}
 	}
 }
 
-func TestPrepareBody_RequestIdGenerated(t *testing.T) {
-	c := NewClient("k", "u")
-	body := c.prepareBody(map[string]interface{}{})
-	if body["requestId"] == nil || body["requestId"].(string) == "" {
-		t.Error("requestId should be auto-generated when not provided")
-	}
-}
-
-func TestPrepareBody_ExistingChatIdPreserved(t *testing.T) {
+func TestPrepareBody_ExtraChatIdPassedThrough(t *testing.T) {
 	c := NewClient("k", "u")
 	body := c.prepareBody(map[string]interface{}{"chatId": "keep-me"})
-	if got := body["chatId"].(string); got != "keep-me" {
+	if got, _ := body["chatId"].(string); got != "keep-me" {
 		t.Errorf("chatId = %q, want %q", got, "keep-me")
 	}
 }
@@ -591,7 +589,7 @@ func TestPrepareBody_Table(t *testing.T) {
 			name:  "defaults only",
 			extra: map[string]interface{}{},
 			check: func(t *testing.T, body map[string]interface{}) {
-				for _, key := range []string{"chatId", "requestId", "sessionId", "tenant"} {
+				for _, key := range []string{"tenant", "userId", "client", "clientVersion", "language"} {
 					if body[key] == nil {
 						t.Errorf("missing default field %q", key)
 					}
@@ -730,8 +728,8 @@ func TestClient_Post_SendsCorrectHeaders(t *testing.T) {
 			t.Errorf("Content-Type = %q, want %q", ct, "application/json; charset=UTF-8")
 		}
 		ae := r.Header.Get("Accept-Encoding")
-		if ae != "gzip, deflate, br" {
-			t.Errorf("Accept-Encoding = %q, want %q", ae, "gzip, deflate, br")
+		if ae != "gzip, deflate" {
+			t.Errorf("Accept-Encoding = %q, want %q", ae, "gzip, deflate")
 		}
 		ua := r.Header.Get("User-Agent")
 		if ua != UserAgent {
@@ -877,5 +875,61 @@ func TestDecodeBody_Gzipped(t *testing.T) {
 	}
 	if string(data) != want {
 		t.Errorf("decodeBody() = %q, want %q", string(data), want)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// color gateway signing / routing (JoyCode 2.7)
+// ---------------------------------------------------------------------------
+
+func TestRequestURL_GatewaySigned(t *testing.T) {
+	c := NewClient("k", "u")
+	c.ColorBaseURL = "https://api-ai.jd.com"
+	raw := c.requestURL("/api/saas/openai/v1/chat/completions")
+
+	u, err := url.Parse(raw)
+	if err != nil {
+		t.Fatalf("parse url: %v", err)
+	}
+	if u.Host != "api-ai.jd.com" || u.Path != "/api" {
+		t.Errorf("gateway url host/path = %q/%q, want api-ai.jd.com//api", u.Host, u.Path)
+	}
+	q := u.Query()
+	if q.Get("appid") != "joycode_ide" {
+		t.Errorf("appid = %q, want joycode_ide", q.Get("appid"))
+	}
+	if q.Get("functionId") != "chat_completions" {
+		t.Errorf("functionId = %q, want chat_completions", q.Get("functionId"))
+	}
+	if q.Get("t") == "" {
+		t.Error("missing timestamp t")
+	}
+	// 重算签名校验：HMAC_SHA256(sorted(values).join("&"), key)
+	signStr := "joycode_ide&chat_completions&" + q.Get("t")
+	mac := hmac.New(sha256.New, []byte(colorHMACKey))
+	mac.Write([]byte(signStr))
+	want := hex.EncodeToString(mac.Sum(nil))
+	if q.Get("sign") != want {
+		t.Errorf("sign = %q, want %q", q.Get("sign"), want)
+	}
+}
+
+func TestRequestURL_DirectV2WhenNoColorBase(t *testing.T) {
+	c := NewClient("k", "u")
+	c.ColorBaseURL = ""
+	c.MasterBaseURL = "https://joycode-api.jd.com"
+	got := c.requestURL("/api/saas/models/v1/modelList")
+	want := "https://joycode-api.jd.com/api/saas/models/v2/modelList"
+	if got != want {
+		t.Errorf("direct url = %q, want %q", got, want)
+	}
+}
+
+func TestRequestURL_UnmappedEndpointStaysDirect(t *testing.T) {
+	c := NewClient("k", "u")
+	got := c.requestURL("/api/saas/openai/v1/rerank") // 不在 color 端点表
+	want := BaseURL + "/api/saas/openai/v1/rerank"
+	if got != want {
+		t.Errorf("unmapped url = %q, want %q", got, want)
 	}
 }

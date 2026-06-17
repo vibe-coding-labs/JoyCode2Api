@@ -135,7 +135,10 @@ const SettingsPage: React.FC = () => {
   const handleSave = async (values: Settings) => {
     setSaving(true);
     try {
-      await api.updateSettings(values);
+      const payload = Object.fromEntries(
+        Object.entries(values).map(([key, value]) => [key, String(value)])
+      );
+      await api.updateSettings(payload);
       message.success('设置已保存');
     } catch (e: unknown) {
       message.error(e instanceof Error ? e.message : '保存设置失败');

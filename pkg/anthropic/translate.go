@@ -209,6 +209,9 @@ type contentBlock struct {
 	// tool_result fields
 	ToolUseID string          `json:"tool_use_id,omitempty"`
 	Content   json.RawMessage `json:"content,omitempty"`
+
+	// image block source (type=image): {type:base64,media_type,data} or {type:url,url}
+	Source json.RawMessage `json:"source,omitempty"`
 }
 
 func buildMessages(req *MessageRequest) []map[string]interface{} {
@@ -317,11 +320,25 @@ func convertAssistantBlocks(blocks []contentBlock) map[string]interface{} {
 func convertUserBlocks(blocks []contentBlock, toolUseIDs map[string]bool) []map[string]interface{} {
 	var result []map[string]interface{}
 	var textParts []string
+	// orderedParts preserves text/image interleaving for multimodal content.
+	var orderedParts []map[string]interface{}
+	hasImage := false
 
 	for _, b := range blocks {
 		switch b.Type {
 		case "text":
 			textParts = append(textParts, b.Text)
+			orderedParts = append(orderedParts, map[string]interface{}{"type": "text", "text": b.Text})
+		case "image":
+			// Translate Anthropic image blocks to OpenAI image_url parts instead
+			// of dropping them (issue #4); mirrors what the OpenAI path forwards.
+			if url := imageBlockToDataURL(b.Source); url != "" {
+				hasImage = true
+				orderedParts = append(orderedParts, map[string]interface{}{
+					"type":      "image_url",
+					"image_url": map[string]interface{}{"url": url},
+				})
+			}
 		case "tool_result":
 			// Skip orphaned tool_results whose tool_use was removed by truncation
 			if b.ToolUseID != "" && !toolUseIDs[b.ToolUseID] {
@@ -337,19 +354,58 @@ func convertUserBlocks(blocks []contentBlock, toolUseIDs map[string]bool) []map[
 		}
 	}
 
-	// If there's remaining text, add it as a user message after tool results
-	if len(textParts) > 0 && len(result) > 0 {
+	// User content is a multimodal parts array when images are present, otherwise
+	// a plain joined string (unchanged text-only behavior).
+	var userContent interface{}
+	if hasImage {
+		userContent = orderedParts
+	} else {
+		userContent = strings.Join(textParts, "\n")
+	}
+	hasUserContent := hasImage || len(textParts) > 0
+
+	// If there's user content alongside tool results, add it after them.
+	if hasUserContent && len(result) > 0 {
 		result = append(result, map[string]interface{}{
-			"role": "user", "content": strings.Join(textParts, "\n"),
+			"role": "user", "content": userContent,
 		})
 	}
 
 	// If no tool_result blocks, return as single user message
 	if len(result) == 0 {
-		return []map[string]interface{}{{"role": "user", "content": strings.Join(textParts, "\n")}}
+		return []map[string]interface{}{{"role": "user", "content": userContent}}
 	}
 
 	return result
+}
+
+// imageBlockToDataURL converts an Anthropic image block source to an OpenAI
+// image_url value: base64 sources become a data: URL, url sources pass through.
+// Returns "" if the source is missing or unrecognized.
+func imageBlockToDataURL(raw json.RawMessage) string {
+	if len(raw) == 0 {
+		return ""
+	}
+	var src struct {
+		Type      string `json:"type"`
+		MediaType string `json:"media_type"`
+		Data      string `json:"data"`
+		URL       string `json:"url"`
+	}
+	if err := json.Unmarshal(raw, &src); err != nil {
+		return ""
+	}
+	if src.Data != "" {
+		mt := src.MediaType
+		if mt == "" {
+			mt = "image/png"
+		}
+		return "data:" + mt + ";base64," + src.Data
+	}
+	if src.URL != "" {
+		return src.URL
+	}
+	return ""
 }
 
 func extractToolResultContent(raw json.RawMessage) string {

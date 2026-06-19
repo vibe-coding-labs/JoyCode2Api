@@ -1,6 +1,8 @@
 package main
 
 import (
+	"crypto/rand"
+	"encoding/hex"
 	"fmt"
 
 	"github.com/spf13/cobra"
@@ -42,6 +44,16 @@ var resetPasswordCmd = &cobra.Command{
 
 		if err := s.SetSetting("auth_password_hash", hash); err != nil {
 			return fmt.Errorf("保存密码失败: %w", err)
+		}
+
+		if s.GetSetting("auth_jwt_secret") == "" {
+			b := make([]byte, 32)
+			if _, err := rand.Read(b); err != nil {
+				return fmt.Errorf("生成 JWT secret 失败: %w", err)
+			}
+			if err := s.SetSetting("auth_jwt_secret", hex.EncodeToString(b)); err != nil {
+				return fmt.Errorf("保存 JWT secret 失败: %w", err)
+			}
 		}
 
 		fmt.Println("密码重置成功")

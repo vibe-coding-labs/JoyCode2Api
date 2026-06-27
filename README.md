@@ -69,9 +69,45 @@ Claude Code / Cursor / Windsurf  →  JoyCode2Api  →  JoyCode API
 
 ## 怎么跑起来
 
+### 从源码构建
+
+想自己编译，或者 Release 里没有你平台的预编译包，就从源码 build。本项目是纯 Go（sqlite 用 modernc 纯 Go 驱动），**不需要任何 C 工具链**，一条 `go build` 就能编出当前平台的二进制。
+
+```bash
+git clone https://github.com/vibe-coding-labs/JoyCode2Api.git
+cd JoyCode2Api
+CGO_ENABLED=0 go build -o JoyCode2Api ./cmd/JoyCode2Api/
+./JoyCode2Api serve
+```
+
+需要 Go 1.25+。前端已经随仓库提交（`cmd/JoyCode2Api/static/`），不装 Node.js 也能直接编译出带界面的二进制；只有要改前端时才需要 `cd web && npm install && npm run build`。
+
+#### 🤖 给 AI Agent 的一键指令
+
+懒得手动敲？把下面这段原样复制给你的 AI 助手（Claude Code / Cursor / Windsurf 等），它会自动完成克隆、编译、后台启动，并用默认浏览器打开 Dashboard：
+
+> **👇 复制下面这段，粘贴给你的 AI Agent：**
+
+```text
+请帮我在本机从源码构建并运行 JoyCode2Api（一个 Go 项目），完整步骤如下：
+
+1. 在当前目录克隆仓库并进入：git clone https://github.com/vibe-coding-labs/JoyCode2Api.git && cd JoyCode2Api
+2. 确认 Go 版本 >= 1.25（运行 go version 查看）；若本机未安装 Go，先安装后再继续
+3. 编译当前平台的二进制（纯 Go，禁用 CGO，无需 C 工具链）：CGO_ENABLED=0 go build -o JoyCode2Api ./cmd/JoyCode2Api/
+4. 后台启动服务（HTTP 模式，端口 34891）：./JoyCode2Api serve --tls=false -p 34891
+   - 在后台运行，等到日志出现 "running on http://0.0.0.0:34891" 就表示就绪
+   - 若 34891 端口被占用，换一个端口（如 -p 34892），下面浏览器地址同步改
+5. 用系统默认浏览器打开管理界面 http://localhost:34891：
+   - macOS：执行 open http://localhost:34891
+   - Linux：执行 xdg-open http://localhost:34891
+   - Windows：执行 start http://localhost:34891
+
+启动后浏览器会自动打开 Dashboard。首次使用在界面上用京东 App 扫码添加账号，再按界面提示把环境变量接到 Claude Code / Cursor。服务保持后台运行，停止进程即结束。
+```
+
 ### 构建
 
-需要 Go 1.22+ 和 Node.js 18+。
+需要 Go 1.25+ 和 Node.js 18+。
 
 ```bash
 # 先构建前端

@@ -39,7 +39,7 @@ const (
 	containerStateDB = "/root/.joycode-ide/state.vscdb"
 )
 
-// LoadFromSystem reads ptKey from local JoyCode state database (macOS).
+// LoadFromSystem reads ptKey from local JoyCode state database (macOS/Windows/Linux).
 func LoadFromSystem() (*Credentials, error) {
 	if dbPath := os.Getenv(stateDBEnv); dbPath != "" {
 		return loadFromStateDB(dbPath)
@@ -47,16 +47,30 @@ func LoadFromSystem() (*Credentials, error) {
 	if _, err := os.Stat(containerStateDB); err == nil {
 		return loadFromStateDB(containerStateDB)
 	}
-	if runtime.GOOS != "darwin" {
-		return nil, fmt.Errorf("auto credential extraction requires macOS JoyCode IDE state; in Docker, mount state.vscdb to %s or set %s", containerStateDB, stateDBEnv)
-	}
 	home, err := os.UserHomeDir()
 	if err != nil {
 		return nil, fmt.Errorf("cannot determine home directory: %w", err)
 	}
-	dbPath := filepath.Join(home,
-		"Library", "Application Support",
-		"JoyCode", "User", "globalStorage", "state.vscdb")
+
+	var dbPath string
+	switch runtime.GOOS {
+	case "darwin":
+		dbPath = filepath.Join(home,
+			"Library", "Application Support",
+			"JoyCode", "User", "globalStorage", "state.vscdb")
+	case "windows":
+		appData := os.Getenv("APPDATA")
+		if appData == "" {
+			appData = filepath.Join(home, "AppData", "Roaming")
+		}
+		dbPath = filepath.Join(appData,
+			"JoyCode", "User", "globalStorage", "state.vscdb")
+	case "linux":
+		dbPath = filepath.Join(home,
+			".config", "JoyCode", "User", "globalStorage", "state.vscdb")
+	default:
+		return nil, fmt.Errorf("auto credential extraction not supported on %s; set %s", runtime.GOOS, stateDBEnv)
+	}
 
 	if _, err := os.Stat(dbPath); os.IsNotExist(err) {
 		return nil, fmt.Errorf("JoyCode state database not found at %s\n  Please install and log in to JoyCode IDE first", dbPath)
@@ -72,7 +86,8 @@ func loadFromStateDB(dbPath string) (*Credentials, error) {
 
 	// modernc 不支持 mattn 的 ?mode=ro query；用 SQLite URI 以真正的只读共享锁
 	// 打开 JoyCode IDE 的库，避免 IDE 运行时拿不到锁。
-	db, err := sql.Open("sqlite", "file:"+dbPath+"?mode=ro")
+	// filepath.ToSlash 保证 Windows 反斜杠路径在 URI 中正确解析。
+	db, err := sql.Open("sqlite", "file:"+filepath.ToSlash(dbPath)+"?mode=ro")
 	if err != nil {
 		return nil, fmt.Errorf("cannot open JoyCode database: %w", err)
 	}

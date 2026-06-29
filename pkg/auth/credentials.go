@@ -86,8 +86,7 @@ func loadFromStateDB(dbPath string) (*Credentials, error) {
 
 	// modernc 不支持 mattn 的 ?mode=ro query；用 SQLite URI 以真正的只读共享锁
 	// 打开 JoyCode IDE 的库，避免 IDE 运行时拿不到锁。
-	// filepath.ToSlash 保证 Windows 反斜杠路径在 URI 中正确解析。
-	db, err := sql.Open("sqlite", "file:"+filepath.ToSlash(dbPath)+"?mode=ro")
+	db, err := sql.Open("sqlite", sqliteReadOnlyURI(dbPath))
 	if err != nil {
 		return nil, fmt.Errorf("cannot open JoyCode database: %w", err)
 	}
@@ -119,4 +118,14 @@ func loadFromStateDB(dbPath string) (*Credentials, error) {
 		LoginType:     data.JoyCoderUser.LoginType,
 		OrgFullName:   data.JoyCoderUser.OrgFullName,
 	}, nil
+}
+
+// sqliteReadOnlyURI builds a cross-platform SQLite URI with read-only mode.
+// On Windows, absolute paths like C:\Users\... must become /C:/Users/... in URI form.
+func sqliteReadOnlyURI(path string) string {
+	p := filepath.ToSlash(path)
+	if len(p) >= 2 && p[1] == ':' {
+		p = "/" + p
+	}
+	return "file:" + p + "?mode=ro"
 }

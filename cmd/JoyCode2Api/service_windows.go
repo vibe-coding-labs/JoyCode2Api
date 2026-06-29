@@ -42,7 +42,9 @@ func installService(port int) error {
 	serviceName := serviceLabel
 	home, _ := os.UserHomeDir()
 	logPath := filepath.Join(home, logDir)
-	os.MkdirAll(logPath, 0755)
+	if err := os.MkdirAll(logPath, 0755); err != nil {
+		return fmt.Errorf("cannot create log directory: %w", err)
+	}
 
 	appParams := fmt.Sprintf("serve --port %d --skip-validation", port)
 

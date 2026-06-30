@@ -1,0 +1,26 @@
+services:
+  joycode-proxy:
+    build:
+      context: .
+    image: joycode-proxy:latest
+    container_name: joycode-proxy
+    command: ["serve", "--skip-validation"]
+    restart: unless-stopped
+    environment:
+      - JOYCODE_STATE_DB=/root/.joycode-proxy/state.vscdb
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    ports:
+      - "34891:34891"
+    volumes:
+      - ./joycode-data:/root/.joycode-proxy
+      # 如果宿主机装了 JoyCode IDE，可取消下一行注释挂载本地登录态。
+      # - /path/to/state.vscdb:/root/.joycode-proxy/state.vscdb:ro
+    healthcheck:
+      test:
+        - CMD-SHELL
+        - wget -qO- http://localhost:34891/health || exit 1
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 5s

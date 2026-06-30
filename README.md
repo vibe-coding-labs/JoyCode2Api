@@ -124,6 +124,15 @@ docker build -t joycode-proxy .
 docker run -p 34891:34891 joycode-proxy
 ```
 
+如果用 Docker Compose，仓库里自带了示例文件 `docker-compose.example.yml`：
+
+```bash
+cp docker-compose.example.yml docker-compose.yml
+docker compose up -d --build
+```
+
+> **注意：** Docker / Linux 环境通常拿不到宿主机本地 JoyCode 登录态，所以 Compose 示例默认使用 `serve --skip-validation` 先把 Dashboard 启起来，再在页面里完成 OAuth 授权登录。运行数据会保存在 `./joycode-data/`。
+
 > **构建时连不上 Alpine 源?** 如果 `docker build` 卡在 `apk add` 并报 `ca-certificates`/`gcc`/`musl-dev` "no such package"，根因通常是网络连不上官方源 `dl-cdn.alpinelinux.org`（国内常见）。用 `ALPINE_MIRROR` 构建参数切到国内镜像即可：
 >
 > ```bash
@@ -173,12 +182,13 @@ claude
    - `pt_key`：来自上面 OAuth 回调 URL 的 `pt_key` 参数，或本地 JoyCode IDE 的 `state.vscdb`。
    - `user_id`：JoyCode 客户端 → 设置 → 个人信息。
 3. **挂载本地凭据**：如果宿主机装了 JoyCode IDE，可把其状态库挂进容器，让「一键导入」可用：
-   ```bash
-   docker run -p 34891:34891 \
-     -e JOYCODE_STATE_DB=/data/state.vscdb \
-     -v /path/to/JoyCode/state.vscdb:/data/state.vscdb:ro \
-     joycode-proxy
-   ```
+    ```bash
+    docker run -p 34891:34891 \
+      -e JOYCODE_STATE_DB=/data/state.vscdb \
+      -v /path/to/JoyCode/state.vscdb:/data/state.vscdb:ro \
+      joycode-proxy
+    ```
+    对应的 Docker Compose 配置可以直接在 `docker-compose.example.yml` 里取消 `state.vscdb` 挂载那一行的注释，并改成你的实际路径。
 
 ## API 端点
 

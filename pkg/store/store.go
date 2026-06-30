@@ -12,6 +12,7 @@ import (
 	"os"
 	"path/filepath"
 	"strconv"
+	"strings"
 	"sync"
 	"time"
 
@@ -271,14 +272,22 @@ func (s *Store) migrate() error {
 	}
 
 	// Migration: add error_message column to request_logs
-	s.db.Exec("ALTER TABLE request_logs ADD COLUMN error_message TEXT DEFAULT ''")
+	if err := addColumnIfMissing(s.db, "request_logs", "error_message", "TEXT DEFAULT ''"); err != nil {
+		return err
+	}
 
 	// Migration: add token columns to request_logs
-	s.db.Exec("ALTER TABLE request_logs ADD COLUMN input_tokens INTEGER DEFAULT 0")
-	s.db.Exec("ALTER TABLE request_logs ADD COLUMN output_tokens INTEGER DEFAULT 0")
+	if err := addColumnIfMissing(s.db, "request_logs", "input_tokens", "INTEGER DEFAULT 0"); err != nil {
+		return err
+	}
+	if err := addColumnIfMissing(s.db, "request_logs", "output_tokens", "INTEGER DEFAULT 0"); err != nil {
+		return err
+	}
 
 	// Migration: add display_order column to accounts
-	s.db.Exec("ALTER TABLE accounts ADD COLUMN display_order INTEGER DEFAULT 0")
+	if err := addColumnIfMissing(s.db, "accounts", "display_order", "INTEGER DEFAULT 0"); err != nil {
+		return err
+	}
 
 	// Migration: migrate old schema (api_key as PK) to new schema (user_id as PK)
 	s.migrateUserIDAsPK()
@@ -289,7 +298,32 @@ func (s *Store) migrate() error {
 	// Migration: initialize display_order for existing accounts
 	s.migrateDisplayOrder()
 
+	// Indexes for request_logs (added here so they exist for both fresh and
+	// upgraded databases; CREATE INDEX IF NOT EXISTS is a no-op if present).
+	if _, err := s.db.Exec(`
+		CREATE INDEX IF NOT EXISTS idx_request_logs_api_key ON request_logs(api_key);
+		CREATE INDEX IF NOT EXISTS idx_request_logs_created_at ON request_logs(created_at);
+		CREATE INDEX IF NOT EXISTS idx_request_logs_created_at_api_key ON request_logs(created_at, api_key);
+	`); err != nil {
+		slog.Warn("store: create request_logs indexes failed", "error", err)
+	}
+
 	return nil
+}
+
+// addColumnIfMissing runs `ALTER TABLE ... ADD COLUMN` and ignores the
+// "duplicate column name" error that SQLite returns when the column already
+// exists. Any other error (disk full, locked DB, ...) is returned to the
+// caller so migrations don't silently fail.
+func addColumnIfMissing(db *sql.DB, table, column, typeDef string) error {
+	_, err := db.Exec(fmt.Sprintf("ALTER TABLE %s ADD COLUMN %s %s", table, column, typeDef))
+	if err == nil {
+		return nil
+	}
+	if strings.Contains(err.Error(), "duplicate column name") {
+		return nil
+	}
+	return fmt.Errorf("migrate: add column %s.%s: %w", table, column, err)
 }
 
 // migrateUserIDAsPK migrates the old accounts table (api_key as PK) to the new
@@ -397,26 +431,83 @@ func (s *Store) migrateUserIDAsPK() {
 }
 
 // migrateUTCTimestamps converts existing UTC timestamps to localtime.
-// Uses SQLite to check if the newest record's time is behind local now by more than
-// 30 minutes -- if so, the data was stored in UTC and needs +offset hours.
+//
+// Heuristic: if the newest request_log's created_at is roughly |offset| hours
+// behind (positive offset) or ahead (negative offset) of current localtime,
+// the data was stored in UTC and needs to be shifted by the offset.
+//
+// The check is against the NEWEST record so the migration is idempotent:
+// after shifting, the newest record sits at localtime and won't match again.
+// Supports non-integer-hour offsets (e.g. UTC+5:30) via fractional hours.
 func (s *Store) migrateUTCTimestamps() {
 	_, offset := time.Now().Zone()
-	hours := offset / 3600
-	if hours <= 0 {
+	if offset == 0 {
 		return
 	}
-	// Check if the newest request_log is behind localtime by roughly the offset
-	var count int
-	s.db.QueryRow(fmt.Sprintf(
-		"SELECT COUNT(*) FROM request_logs WHERE created_at < datetime('now', 'localtime') - INTERVAL IS NOT SUPPORTED AND created_at < datetime('now', 'localtime', '-30 minutes')",
-	)).Scan(&count)
-	if count == 0 {
+	hours := float64(offset) / 3600.0
+	absHours := hours
+	if absHours < 0 {
+		absHours = -absHours
+	}
+	// SQLite datetime modifiers accept fractional hours, e.g. "+8.5 hours".
+	// Format with enough precision for any real-world timezone offset.
+	shift := fmt.Sprintf("%+g hours", hours)
+
+	// Find the newest record. If it's more than ~30min off from localtime in
+	// the direction of the offset, treat all existing data as UTC-stored.
+	var newest string
+	err := s.db.QueryRow("SELECT MAX(created_at) FROM request_logs").Scan(&newest)
+	if err != nil || newest == "" {
 		return
 	}
-	s.db.Exec(fmt.Sprintf("UPDATE request_logs SET created_at = datetime(created_at, '+%d hours') WHERE created_at < datetime('now', 'localtime', '-30 minutes')", hours))
-	s.db.Exec(fmt.Sprintf("UPDATE accounts SET created_at = datetime(created_at, '+%d hours') WHERE created_at < datetime('now', 'localtime', '-30 minutes')", hours))
-	s.db.Exec(fmt.Sprintf("UPDATE settings SET updated_at = datetime(updated_at, '+%d hours') WHERE updated_at < datetime('now', 'localtime', '-30 minutes')", hours))
-	slog.Info("migrated UTC timestamps to localtime", "offset_hours", hours, "records_fixed", count)
+
+	// diffExpr = localtime_now - newest (in hours, as a float string).
+	// For UTC+8 with UTC-stored data: newest is ~8h behind → diff ≈ +8.
+	// For UTC-5 with UTC-stored data: newest is ~5h ahead  → diff ≈ -5.
+	// We trigger when |diff| > (absHours - 0.5), i.e. the gap is close to the
+	// full offset and can't be explained by normal time passage.
+	var diff float64
+	err = s.db.QueryRow(
+		"SELECT (strftime('%s','now','localtime') - strftime('%s', ?)) / 3600.0",
+		newest,
+	).Scan(&diff)
+	if err != nil {
+		slog.Warn("migrateUTCTimestamps: diff query failed", "error", err)
+		return
+	}
+	// Same-sign check: positive offset expects positive diff (UTC behind local),
+	// negative offset expects negative diff (UTC ahead of local).
+	if (hours > 0 && diff < absHours-0.5) || (hours < 0 && diff > -absHours+0.5) {
+		return
+	}
+
+	tx, err := s.db.Begin()
+	if err != nil {
+		slog.Warn("migrateUTCTimestamps: begin tx failed", "error", err)
+		return
+	}
+	defer tx.Rollback()
+
+	var fixed int64
+	for _, q := range []string{
+		"UPDATE request_logs SET created_at = datetime(created_at, '" + shift + "')",
+		"UPDATE accounts SET created_at = datetime(created_at, '" + shift + "')",
+		"UPDATE settings SET updated_at = datetime(updated_at, '" + shift + "')",
+	} {
+		res, err := tx.Exec(q)
+		if err != nil {
+			slog.Warn("migrateUTCTimestamps: update failed", "query", q, "error", err)
+			return
+		}
+		if n, err := res.RowsAffected(); err == nil {
+			fixed += n
+		}
+	}
+	if err := tx.Commit(); err != nil {
+		slog.Warn("migrateUTCTimestamps: commit failed", "error", err)
+		return
+	}
+	slog.Info("migrated UTC timestamps to localtime", "offset_hours", hours, "records_fixed", fixed)
 }
 
 func (s *Store) migrateDisplayOrder() {
@@ -630,55 +721,37 @@ func (s *Store) FillAccountStats(accounts []AccountInfo) {
 		return
 	}
 
-	// All-time stats: single GROUP BY query
-	allRows, err := s.db.Query(`
+	// Single query with conditional aggregation for both all-time and today.
+	rows, err := s.db.Query(`
 		SELECT api_key,
-			COUNT(*) as req_count,
-			COALESCE(SUM(input_tokens + output_tokens), 0) as token_sum
+			COUNT(*) as total_req,
+			COALESCE(SUM(input_tokens + output_tokens), 0) as total_tokens,
+			SUM(CASE WHEN date(created_at) = date('now', 'localtime') THEN 1 ELSE 0 END) as today_req,
+			COALESCE(SUM(CASE WHEN date(created_at) = date('now', 'localtime') THEN input_tokens + output_tokens ELSE 0 END), 0) as today_tokens
 		FROM request_logs
 		GROUP BY api_key`)
 	if err != nil {
+		slog.Warn("store: fill account stats query failed", "error", err)
 		return
 	}
-	allMap := make(map[string][2]int)
-	for allRows.Next() {
-		var key string
-		var reqCount, tokenSum int
-		if allRows.Scan(&key, &reqCount, &tokenSum) == nil {
-			allMap[key] = [2]int{reqCount, tokenSum}
-		}
-	}
-	allRows.Close()
+	defer rows.Close()
 
-	// Today stats: single GROUP BY query
-	todayRows, err := s.db.Query(`
-		SELECT api_key,
-			COUNT(*) as req_count,
-			COALESCE(SUM(input_tokens + output_tokens), 0) as token_sum
-		FROM request_logs
-		WHERE date(created_at) = date('now', 'localtime')
-		GROUP BY api_key`)
-	if err != nil {
-		return
-	}
-	todayMap := make(map[string][2]int)
-	for todayRows.Next() {
+	type stats struct{ totalReq, totalTok, todayReq, todayTok int }
+	m := make(map[string]stats)
+	for rows.Next() {
 		var key string
-		var reqCount, tokenSum int
-		if todayRows.Scan(&key, &reqCount, &tokenSum) == nil {
-			todayMap[key] = [2]int{reqCount, tokenSum}
+		var st stats
+		if err := rows.Scan(&key, &st.totalReq, &st.totalTok, &st.todayReq, &st.todayTok); err == nil {
+			m[key] = st
 		}
 	}
-	todayRows.Close()
 
 	for i := range accounts {
-		if v, ok := allMap[accounts[i].UserID]; ok {
-			accounts[i].TotalRequests = v[0]
-			accounts[i].TotalTokens = v[1]
-		}
-		if v, ok := todayMap[accounts[i].UserID]; ok {
-			accounts[i].TodayRequests = v[0]
-			accounts[i].TodayTokens = v[1]
+		if v, ok := m[accounts[i].UserID]; ok {
+			accounts[i].TotalRequests = v.totalReq
+			accounts[i].TotalTokens = v.totalTok
+			accounts[i].TodayRequests = v.todayReq
+			accounts[i].TodayTokens = v.todayTok
 		}
 	}
 }
@@ -989,7 +1062,10 @@ func (s *Store) GetSettings() (map[string]string, error) {
 
 func (s *Store) GetSetting(key string) string {
 	var val string
-	s.db.QueryRow("SELECT value FROM settings WHERE key = ?", key).Scan(&val)
+	err := s.db.QueryRow("SELECT value FROM settings WHERE key = ?", key).Scan(&val)
+	if err != nil && err != sql.ErrNoRows {
+		slog.Error("store: get setting failed", "key", key, "error", err)
+	}
 	return val
 }
 
@@ -1061,19 +1137,30 @@ func (s *Store) GetStats() (*Stats, error) {
 	// near the day boundary for non-UTC servers.
 	tf := "date(created_at) = date('now', 'localtime')"
 
-	err := s.db.QueryRow("SELECT COUNT(*) FROM request_logs WHERE "+tf).Scan(&stats.TotalRequests)
+	// Single aggregate query for all per-day totals (replaces 7 round-trips).
+	err := s.db.QueryRow(`
+		SELECT
+			COUNT(*),
+			COALESCE(AVG(latency_ms), 0),
+			COALESCE(SUM(CASE WHEN status_code >= 400 THEN 1 ELSE 0 END), 0),
+			COALESCE(SUM(CASE WHEN stream = 1 THEN 1 ELSE 0 END), 0),
+			COALESCE(SUM(CASE WHEN status_code < 400 THEN 1 ELSE 0 END), 0),
+			COALESCE(SUM(input_tokens), 0),
+			COALESCE(SUM(output_tokens), 0)
+		FROM request_logs WHERE `+tf).Scan(
+		&stats.TotalRequests, &stats.AvgLatencyMs, &stats.ErrorCount,
+		&stats.StreamCount, &stats.SuccessCount,
+		&stats.TotalInputTk, &stats.TotalOutputTk,
+	)
 	if err != nil {
-		slog.Error("store: get stats count failed", "error", err)
+		slog.Error("store: get stats aggregate failed", "error", err)
 		return nil, err
 	}
 
-	s.db.QueryRow("SELECT COALESCE(AVG(latency_ms), 0) FROM request_logs WHERE "+tf).Scan(&stats.AvgLatencyMs)
-	s.db.QueryRow("SELECT COUNT(*) FROM accounts").Scan(&stats.AccountsCount)
-	s.db.QueryRow("SELECT COUNT(*) FROM request_logs WHERE "+tf+" AND status_code >= 400").Scan(&stats.ErrorCount)
-	s.db.QueryRow("SELECT COUNT(*) FROM request_logs WHERE "+tf+" AND stream = 1").Scan(&stats.StreamCount)
-	s.db.QueryRow("SELECT COUNT(*) FROM request_logs WHERE "+tf+" AND status_code < 400").Scan(&stats.SuccessCount)
-	s.db.QueryRow("SELECT COALESCE(SUM(input_tokens), 0) FROM request_logs WHERE "+tf).Scan(&stats.TotalInputTk)
-	s.db.QueryRow("SELECT COALESCE(SUM(output_tokens), 0) FROM request_logs WHERE "+tf).Scan(&stats.TotalOutputTk)
+	if err := s.db.QueryRow("SELECT COUNT(*) FROM accounts").Scan(&stats.AccountsCount); err != nil {
+		slog.Error("store: get accounts count failed", "error", err)
+		return nil, err
+	}
 
 	rows, err := s.db.Query("SELECT model, COUNT(*) as cnt FROM request_logs WHERE "+tf+" AND model != '' GROUP BY model ORDER BY cnt DESC")
 	if err != nil {
@@ -1122,10 +1209,17 @@ func (s *Store) GetStats() (*Stats, error) {
 
 func (s *Store) GetAllTimeTotals() (*AllTimeTotals, error) {
 	t := &AllTimeTotals{}
-	s.db.QueryRow("SELECT COUNT(*) FROM request_logs").Scan(&t.TotalRequests)
-	s.db.QueryRow("SELECT COALESCE(SUM(input_tokens), 0) FROM request_logs").Scan(&t.TotalInputTk)
-	s.db.QueryRow("SELECT COALESCE(SUM(output_tokens), 0) FROM request_logs").Scan(&t.TotalOutputTk)
-	s.db.QueryRow("SELECT COUNT(*) FROM request_logs WHERE status_code >= 400").Scan(&t.ErrorCount)
+	err := s.db.QueryRow(`
+		SELECT
+			COUNT(*),
+			COALESCE(SUM(input_tokens), 0),
+			COALESCE(SUM(output_tokens), 0),
+			COALESCE(SUM(CASE WHEN status_code >= 400 THEN 1 ELSE 0 END), 0)
+		FROM request_logs`).Scan(&t.TotalRequests, &t.TotalInputTk, &t.TotalOutputTk, &t.ErrorCount)
+	if err != nil {
+		slog.Error("store: get all-time totals failed", "error", err)
+		return nil, err
+	}
 	return t, nil
 }
 
@@ -1159,13 +1253,24 @@ func (s *Store) GetAccountStats(userID string) (*AccountStats, error) {
 	as := &AccountStats{UserID: userID}
 	tf := "created_at >= datetime('now', 'localtime', '-24 hours')"
 
-	s.db.QueryRow("SELECT COUNT(*) FROM request_logs WHERE api_key = ? AND "+tf, userID).Scan(&as.TotalRequests)
-	s.db.QueryRow("SELECT COALESCE(AVG(latency_ms), 0) FROM request_logs WHERE api_key = ? AND "+tf, userID).Scan(&as.AvgLatencyMs)
-	s.db.QueryRow("SELECT COUNT(*) FROM request_logs WHERE api_key = ? AND stream = 1 AND "+tf, userID).Scan(&as.StreamCount)
-	s.db.QueryRow("SELECT COUNT(*) FROM request_logs WHERE api_key = ? AND status_code >= 400 AND "+tf, userID).Scan(&as.ErrorCount)
-	s.db.QueryRow("SELECT COUNT(*) FROM request_logs WHERE api_key = ? AND status_code < 400 AND "+tf, userID).Scan(&as.SuccessCount)
-	s.db.QueryRow("SELECT COALESCE(SUM(input_tokens), 0) FROM request_logs WHERE api_key = ? AND "+tf, userID).Scan(&as.TotalInputTk)
-	s.db.QueryRow("SELECT COALESCE(SUM(output_tokens), 0) FROM request_logs WHERE api_key = ? AND "+tf, userID).Scan(&as.TotalOutputTk)
+	err := s.db.QueryRow(`
+		SELECT
+			COUNT(*),
+			COALESCE(AVG(latency_ms), 0),
+			COALESCE(SUM(CASE WHEN stream = 1 THEN 1 ELSE 0 END), 0),
+			COALESCE(SUM(CASE WHEN status_code >= 400 THEN 1 ELSE 0 END), 0),
+			COALESCE(SUM(CASE WHEN status_code < 400 THEN 1 ELSE 0 END), 0),
+			COALESCE(SUM(input_tokens), 0),
+			COALESCE(SUM(output_tokens), 0)
+		FROM request_logs WHERE api_key = ? AND `+tf, userID).Scan(
+		&as.TotalRequests, &as.AvgLatencyMs, &as.StreamCount,
+		&as.ErrorCount, &as.SuccessCount,
+		&as.TotalInputTk, &as.TotalOutputTk,
+	)
+	if err != nil {
+		slog.Error("store: get account stats failed", "user_id", userID, "error", err)
+		return nil, err
+	}
 
 	rows, err := s.db.Query("SELECT model, COUNT(*) as cnt FROM request_logs WHERE api_key = ? AND "+tf+" GROUP BY model ORDER BY cnt DESC", userID)
 	if err != nil {

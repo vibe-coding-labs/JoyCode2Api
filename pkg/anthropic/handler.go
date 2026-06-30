@@ -10,6 +10,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/vibe-coding-labs/JoyCode2Api/pkg/common"
 	"github.com/vibe-coding-labs/JoyCode2Api/pkg/joycode"
 	"github.com/vibe-coding-labs/JoyCode2Api/pkg/store"
 )
@@ -231,41 +232,10 @@ func (h *Handler) handleStream(w http.ResponseWriter, r *http.Request, req *Mess
 	jcBody = TranslateRequest(req, store.GetAccountDefaultModel(r), systemDefault)
 	jcBody["stream"] = true
 
-	// Connect with retry, progressive auto-truncate on context limit
-	resp, err := h.connectStreamWithRetry(r, jcBody, client)
-	for truncRound := 0; err != nil && isContextLimitError(err.Error()) && truncRound < maxTruncationRounds; truncRound++ {
-		reqLog(r).Warn("stream context limit, truncating", "round", truncRound+1)
-		if !truncateMessages(req) {
-			break
-		}
-		jcBody = TranslateRequest(req, store.GetAccountDefaultModel(r), systemDefault)
-		jcBody["stream"] = true
-		resp, err = h.connectStreamWithRetry(r, jcBody, client)
-	}
-	if err != nil {
-		errMsg := err.Error()
-		if isContextLimitError(errMsg) {
-			reqLog(r).Warn("context limit exceeded (stream), cannot proceed even after progressive truncation")
-			writeAnthropicRequestError(w, "上下文长度超出模型限制，已尝试自动截断但仍无法满足。请压缩对话历史或开启新对话。原始错误: "+errMsg)
-			return
-		}
-		if isTimeoutError(err) {
-			reqLog(r).Error("upstream timeout (stream) after retries", "error", err)
-			writeAnthropicError(w, 504, "上游服务响应超时，请稍后重试。如果问题持续，请尝试减少上下文长度或开启新对话。原始错误: "+errMsg)
-			return
-		}
-		if strings.Contains(errMsg, "content_filter") || strings.Contains(errMsg, "SENSITIVE_CONTENT") {
-			reqLog(r).Warn("upstream content_filter (stream), returning detailed error")
-				writeContentFilterError(w, errMsg)
-			return
-		}
-		reqLog(r).Error("stream failed after retries", "error", errMsg)
-		writeAnthropicError(w, 500, errMsg)
-		return
-	}
-	defer resp.Body.Close()
-
-	// Commit response headers only after upstream confirmed valid
+	// Commit SSE headers + message_start early so we can send heartbeat ping
+	// events while waiting for the upstream to respond. The JoyCode upstream
+	// buffers the entire response (TTFB 10–30s for reasoning models); without
+	// keepalive, Claude Code and other clients may time out during this gap.
 	w.Header().Set("Content-Type", "text/event-stream")
 	w.Header().Set("Cache-Control", "no-cache")
 	w.Header().Set("Connection", "keep-alive")
@@ -285,6 +255,57 @@ func (h *Handler) handleStream(w http.ResponseWriter, r *http.Request, req *Mess
 	})
 	FormatSSE(w, "ping", ssePing{Type: "ping"})
 	flusher.Flush()
+
+	// Heartbeat: send periodic ping events while upstream is silent.
+	stopHeartbeat := make(chan struct{})
+	go func() {
+		ticker := time.NewTicker(5 * time.Second)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-stopHeartbeat:
+				return
+			case <-ticker.C:
+				FormatSSE(w, "ping", ssePing{Type: "ping"})
+				flusher.Flush()
+			}
+		}
+	}()
+
+	// Connect with retry, progressive auto-truncate on context limit
+	resp, err := h.connectStreamWithRetry(r, jcBody, client)
+	for truncRound := 0; err != nil && isContextLimitError(err.Error()) && truncRound < maxTruncationRounds; truncRound++ {
+		reqLog(r).Warn("stream context limit, truncating", "round", truncRound+1)
+		if !truncateMessages(req) {
+			break
+		}
+		jcBody = TranslateRequest(req, store.GetAccountDefaultModel(r), systemDefault)
+		jcBody["stream"] = true
+		resp, err = h.connectStreamWithRetry(r, jcBody, client)
+	}
+	close(stopHeartbeat)
+	if err != nil {
+		errMsg := err.Error()
+		if isContextLimitError(errMsg) {
+			reqLog(r).Warn("context limit exceeded (stream), cannot proceed even after progressive truncation")
+			writeStreamError(w, flusher, "上下文长度超出模型限制，已尝试自动截断但仍无法满足。请压缩对话历史或开启新对话。原始错误: "+errMsg)
+			return
+		}
+		if isTimeoutError(err) {
+			reqLog(r).Error("upstream timeout (stream) after retries", "error", err)
+			writeStreamError(w, flusher, "上游服务响应超时，请稍后重试。如果问题持续，请尝试减少上下文长度或开启新对话。原始错误: "+errMsg)
+			return
+		}
+		if strings.Contains(errMsg, "content_filter") || strings.Contains(errMsg, "SENSITIVE_CONTENT") {
+			reqLog(r).Warn("upstream content_filter (stream), returning detailed error")
+			writeStreamError(w, flusher, errMsg)
+			return
+		}
+		reqLog(r).Error("stream failed after retries", "error", errMsg)
+		writeStreamError(w, flusher, errMsg)
+		return
+	}
+	defer resp.Body.Close()
 
 	type toolCallAccum struct {
 		ID        string
@@ -492,19 +513,40 @@ func (h *Handler) handleNativeAnthropicStream(w http.ResponseWriter, r *http.Req
 	body := TranslateAnthropicRequest(req, store.GetAccountDefaultModel(r), systemDefault)
 	logRequestDetails(r, "translated native anthropic request (stream)", body)
 
-	resp, err := h.connectNativeAnthropicStreamWithRetry(r, body, client)
-	if err != nil {
-		reqLog(r).Error("native anthropic stream failed after retries", "error", err)
-		writeAnthropicError(w, 500, err.Error())
-		return
-	}
-	defer resp.Body.Close()
-
+	// Commit SSE headers early so we can send heartbeat comment lines while
+	// waiting for the upstream to respond (TTFB can be 10–30s for reasoning
+	// models). SSE comment lines (": ...") are ignored by all compliant clients.
 	w.Header().Set("Content-Type", "text/event-stream")
 	w.Header().Set("Cache-Control", "no-cache")
 	w.Header().Set("Connection", "keep-alive")
 	w.Header().Set("Access-Control-Allow-Origin", "*")
 	w.WriteHeader(200)
+
+	stopHeartbeat := make(chan struct{})
+	go func() {
+		ticker := time.NewTicker(5 * time.Second)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-stopHeartbeat:
+				return
+			case <-ticker.C:
+				if _, err := w.Write([]byte(": keepalive\n\n")); err != nil {
+					return
+				}
+				flusher.Flush()
+			}
+		}
+	}()
+
+	resp, err := h.connectNativeAnthropicStreamWithRetry(r, body, client)
+	close(stopHeartbeat)
+	if err != nil {
+		reqLog(r).Error("native anthropic stream failed after retries", "error", err)
+		writeStreamError(w, flusher, err.Error())
+		return
+	}
+	defer resp.Body.Close()
 
 	scanner := bufio.NewScanner(resp.Body)
 	scanner.Buffer(make([]byte, 0, 64*1024), 1024*1024)
@@ -887,14 +929,7 @@ func (h *Handler) connectStreamWithRetry(r *http.Request, jcBody map[string]inte
 
 // isTimeoutError checks if the error is caused by an upstream timeout.
 func isTimeoutError(err error) bool {
-	if err == nil {
-		return false
-	}
-	msg := err.Error()
-	return strings.Contains(msg, "context deadline exceeded") ||
-		strings.Contains(msg, "Client.Timeout exceeded") ||
-		strings.Contains(msg, "deadline exceeded") ||
-		strings.Contains(msg, "i/o timeout")
+	return common.IsTimeoutError(err)
 }
 
 // isContextLimitError checks if the upstream error indicates context length exceeded.
@@ -954,14 +989,16 @@ func isUpstreamError(line string) bool {
 }
 
 func truncate(s string, maxLen int) string {
-	if len(s) <= maxLen {
-		return s
-	}
-	return s[:maxLen] + "..."
+	return common.Truncate(s, maxLen)
 }
 
 func writeAnthropicJSON(w http.ResponseWriter, code int, v interface{}) {
-	b, _ := json.Marshal(v)
+	b, err := json.Marshal(v)
+	if err != nil {
+		slog.Error("writeAnthropicJSON: marshal failed", "error", err)
+		w.WriteHeader(http.StatusInternalServerError)
+		return
+	}
 	w.Header().Set("Content-Type", "application/json")
 	w.Header().Set("Access-Control-Allow-Origin", "*")
 	w.WriteHeader(code)

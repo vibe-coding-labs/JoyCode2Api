@@ -17,6 +17,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/vibe-coding-labs/JoyCode2Api/pkg/common"
 )
 
 const (
@@ -93,6 +95,15 @@ func (r *gzipReadCloser) Close() error {
 	return bodyErr
 }
 
+// defaultTransport is a shared transport with sane connection-pool defaults
+// so that clients created without an explicit transport still reuse TCP
+// connections instead of dialing anew for every request.
+var defaultTransport = &http.Transport{
+	MaxIdleConns:        100,
+	MaxIdleConnsPerHost: 10,
+	IdleConnTimeout:     90 * time.Second,
+}
+
 // envOr 读取环境变量，为空则返回 fallback
 func envOr(key, fallback string) string {
 	if v := os.Getenv(key); v != "" {
@@ -107,7 +118,10 @@ func NewClient(ptKey, userID string) *Client {
 		UserID:       userID,
 		SessionID:    newHexID(),
 		ColorBaseURL: DefaultColorBaseURL,
-		httpClient:   &http.Client{Timeout: 30 * time.Minute},
+		httpClient: &http.Client{
+			Timeout:   30 * time.Minute,
+			Transport: defaultTransport,
+		},
 	}
 }
 
@@ -272,6 +286,27 @@ func (c *Client) doPost(endpoint string, body map[string]interface{}) (*http.Res
 	return c.httpClient.Do(req)
 }
 
+// doPostStream is like doPost but disables Accept-Encoding: gzip so the
+// upstream returns raw (uncompressed) SSE. gzip.Reader buffers an entire
+// gzip block before yielding any bytes, which breaks chunk-by-chunk
+// streaming — the client sees all data arrive at once after a long delay.
+func (c *Client) doPostStream(endpoint string, body map[string]interface{}) (*http.Response, error) {
+	data, err := json.Marshal(body)
+	if err != nil {
+		slog.Error("marshal stream request body", "endpoint", endpoint, "error", err)
+		return nil, err
+	}
+	req, err := http.NewRequest("POST", c.requestURL(endpoint), bytes.NewReader(data))
+	if err != nil {
+		slog.Error("create stream request", "endpoint", endpoint, "error", err)
+		return nil, err
+	}
+	h := c.headers()
+	h.Set("Accept-Encoding", "identity") // no gzip for streaming
+	req.Header = h
+	return c.httpClient.Do(req)
+}
+
 func (c *Client) doAnthropicPost(endpoint string, body map[string]interface{}) (*http.Response, error) {
 	data, err := json.Marshal(body)
 	if err != nil {
@@ -284,6 +319,25 @@ func (c *Client) doAnthropicPost(endpoint string, body map[string]interface{}) (
 		return nil, err
 	}
 	req.Header = c.anthropicHeaders()
+	return c.httpClient.Do(req)
+}
+
+// doAnthropicPostStream is like doAnthropicPost but disables gzip for the
+// same reason as doPostStream — see its comment for details.
+func (c *Client) doAnthropicPostStream(endpoint string, body map[string]interface{}) (*http.Response, error) {
+	data, err := json.Marshal(body)
+	if err != nil {
+		slog.Error("marshal anthropic stream request body", "endpoint", endpoint, "error", err)
+		return nil, err
+	}
+	req, err := http.NewRequest("POST", c.requestURL(endpoint), bytes.NewReader(data))
+	if err != nil {
+		slog.Error("create anthropic stream request", "endpoint", endpoint, "error", err)
+		return nil, err
+	}
+	h := c.anthropicHeaders()
+	h.Set("Accept-Encoding", "identity")
+	req.Header = h
 	return c.httpClient.Do(req)
 }
 
@@ -338,7 +392,7 @@ func (c *Client) Post(endpoint string, body map[string]interface{}) (map[string]
 }
 
 func (c *Client) PostStream(endpoint string, body map[string]interface{}) (*http.Response, error) {
-	resp, err := c.doPost(endpoint, c.prepareBody(body))
+	resp, err := c.doPostStream(endpoint, c.prepareBody(body))
 	if err != nil {
 		slog.Error("upstream stream connect", "endpoint", endpoint, "error", err)
 		return nil, err
@@ -357,7 +411,7 @@ func (c *Client) PostStream(endpoint string, body map[string]interface{}) (*http
 }
 
 func (c *Client) PostAnthropicStream(endpoint string, body map[string]interface{}) (*http.Response, error) {
-	resp, err := c.doAnthropicPost(endpoint, c.prepareAnthropicBody(body))
+	resp, err := c.doAnthropicPostStream(endpoint, c.prepareAnthropicBody(body))
 	if err != nil {
 		slog.Error("upstream anthropic stream connect", "endpoint", endpoint, "error", err)
 		return nil, err
@@ -465,8 +519,5 @@ func (c *Client) UserInfoWithRefresh() (string, error) {
 }
 
 func truncate(s string, maxLen int) string {
-	if len(s) <= maxLen {
-		return s
-	}
-	return s[:maxLen] + "..."
+	return common.Truncate(s, maxLen)
 }

@@ -95,6 +95,9 @@ var serveCmd = &cobra.Command{
 		keeper := keepalive.NewKeeper(s, 1*time.Hour)
 		keeper.Start(10 * time.Minute)
 
+		// stopCh is closed on shutdown so background goroutines can exit.
+		stopCh := make(chan struct{})
+
 		// Per-request client resolution from database accounts
 		if s != nil {
 			// Shared transport for connection pooling and limits
@@ -108,17 +111,22 @@ var serveCmd = &cobra.Command{
 			go func() {
 				ticker := time.NewTicker(10 * time.Second)
 				defer ticker.Stop()
-				for range ticker.C {
-					maxConns := s.GetIntSetting("max_connections", 20)
-					if maxConns < 1 {
-						maxConns = 1
+				for {
+					select {
+					case <-ticker.C:
+						maxConns := s.GetIntSetting("max_connections", 20)
+						if maxConns < 1 {
+							maxConns = 1
+						}
+						sharedTransport.MaxConnsPerHost = maxConns
+						idle := maxConns / 2
+						if idle < 2 {
+							idle = 2
+						}
+						sharedTransport.MaxIdleConnsPerHost = idle
+					case <-stopCh:
+						return
 					}
-					sharedTransport.MaxConnsPerHost = maxConns
-					idle := maxConns / 2
-					if idle < 2 {
-						idle = 2
-					}
-					sharedTransport.MaxIdleConnsPerHost = idle
 				}
 			}()
 
@@ -130,13 +138,7 @@ var serveCmd = &cobra.Command{
 						systemClient.SetColorContext(creds.ColorBaseURL, creds.MasterBaseURL, creds.Tenant, creds.LoginType, creds.OrgFullName)
 					}
 				}
-				apiKey := r.Header.Get("x-api-key")
-				if apiKey == "" {
-					auth := r.Header.Get("Authorization")
-					if strings.HasPrefix(auth, "Bearer ") {
-						apiKey = strings.TrimPrefix(auth, "Bearer ")
-					}
-				}
+				apiKey := extractAPIKey(r)
 				timeout := s.GetIntSetting("request_timeout", 1800)
 				if timeout < 60 {
 					timeout = 60
@@ -174,16 +176,25 @@ var serveCmd = &cobra.Command{
 			anth.Resolver = resolver
 		}
 
-		// Background log cleanup goroutine
+		// Background log cleanup goroutine (nil-guarded; s may be nil if store.Open failed)
 		go func() {
+			if s == nil {
+				return
+			}
 			ticker := time.NewTicker(1 * time.Hour)
 			defer ticker.Stop()
-			if days := s.GetIntSetting("log_retention_days", 30); days > 0 {
-				s.CleanupOldLogs(days)
-			}
-			for range ticker.C {
+			cleanup := func() {
 				if days := s.GetIntSetting("log_retention_days", 30); days > 0 {
 					s.CleanupOldLogs(days)
+				}
+			}
+			cleanup()
+			for {
+				select {
+				case <-ticker.C:
+					cleanup()
+				case <-stopCh:
+					return
 				}
 			}
 		}()
@@ -281,6 +292,9 @@ var serveCmd = &cobra.Command{
 		<-quit
 		log.Println("Shutting down server...")
 
+		// Signal background goroutines to stop.
+		close(stopCh)
+
 		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 		defer cancel()
 		if err := httpSrv.Shutdown(ctx); err != nil {
@@ -325,12 +339,7 @@ func requestLogMiddleware(next http.Handler, s *store.Store) http.Handler {
 		// Resolve account from API key/token (used for model, session tracking, logging)
 		var resolvedAccount *store.Account
 		if s != nil {
-			ak := r.Header.Get("x-api-key")
-			if ak == "" {
-				if auth := r.Header.Get("Authorization"); strings.HasPrefix(auth, "Bearer ") {
-					ak = strings.TrimPrefix(auth, "Bearer ")
-				}
-			}
+			ak := extractAPIKey(r)
 			if ak != "" {
 				if a, _ := s.GetAccountByToken(ak); a != nil {
 					resolvedAccount = a
@@ -348,9 +357,10 @@ func requestLogMiddleware(next http.Handler, s *store.Store) http.Handler {
 			}
 		}
 
-		// Peek at body to extract model + session_id before handler consumes it
+		// Peek at body to extract model + session_id + stream flag before handler consumes it
 		var model string
 		var sessionID string
+		var bodyStream bool
 		if r.Method == "POST" && r.Body != nil {
 			bodyBytes, _ := io.ReadAll(io.LimitReader(r.Body, 100<<20))
 			r.Body.Close()
@@ -359,6 +369,9 @@ func requestLogMiddleware(next http.Handler, s *store.Store) http.Handler {
 			if json.Unmarshal(bodyBytes, &body) == nil {
 				if m, ok := body["model"].(string); ok {
 					model = m
+				}
+				if s, ok := body["stream"].(bool); ok {
+					bodyStream = s
 				}
 				// Extract session_id from Claude Code metadata
 				if meta, ok := body["metadata"].(map[string]interface{}); ok {
@@ -380,16 +393,11 @@ func requestLogMiddleware(next http.Handler, s *store.Store) http.Handler {
 		rw := &responseWriter{ResponseWriter: w, statusCode: 200, bodyLimit: 64 << 10}
 		next.ServeHTTP(rw, r)
 
-		// Log /v1/ requests
+		// Log /v1/ requests (skip GET /v1/models — it's a lightweight list
+		// endpoint with no model/tokens and would pollute stats with empty rows).
 		path := r.URL.Path
-		if strings.HasPrefix(path, "/v1/") {
-			apiKey := r.Header.Get("x-api-key")
-			if apiKey == "" {
-				apiKey := r.Header.Get("Authorization")
-				if strings.HasPrefix(apiKey, "Bearer ") {
-					apiKey = strings.TrimPrefix(apiKey, "Bearer ")
-				}
-			}
+		if strings.HasPrefix(path, "/v1/") && !(r.Method == http.MethodGet && path == "/v1/models") {
+			apiKey := extractAPIKey(r)
 			if apiKey != "" {
 				if account, _ := s.GetAccountByToken(apiKey); account != nil {
 					apiKey = account.UserID
@@ -401,12 +409,11 @@ func requestLogMiddleware(next http.Handler, s *store.Store) http.Handler {
 				}
 			}
 
-			isStream := r.URL.Query().Get("stream") != "" || path == "/v1/messages"
+			isStream := bodyStream || r.URL.Query().Get("stream") != ""
 			latency := time.Since(start).Milliseconds()
 
 			var errMsg string
 			if rw.statusCode >= 400 {
-				reqID := atomic.AddUint64(&requestCounter, 1)
 				errMsg = fmt.Sprintf("HTTP %d on %s %s", rw.statusCode, r.Method, path)
 				if body := strings.TrimSpace(rw.body.String()); body != "" {
 					errMsg = fmt.Sprintf("%s\n%s", errMsg, body)
@@ -464,6 +471,19 @@ func (rw *responseWriter) Flush() {
 	if f, ok := rw.ResponseWriter.(http.Flusher); ok {
 		f.Flush()
 	}
+}
+
+// extractAPIKey pulls the caller's API key from either the x-api-key header
+// (Anthropic convention) or the Authorization: Bearer <key> header (OpenAI
+// convention). Returns "" if neither is present.
+func extractAPIKey(r *http.Request) string {
+	if k := r.Header.Get("x-api-key"); k != "" {
+		return k
+	}
+	if a := r.Header.Get("Authorization"); strings.HasPrefix(a, "Bearer ") {
+		return strings.TrimPrefix(a, "Bearer ")
+	}
+	return ""
 }
 
 // setupLogRotation initializes rotating log writers for slog and log.

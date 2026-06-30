@@ -47,7 +47,12 @@ func writeCORS(w http.ResponseWriter) {
 }
 
 func writeJSON(w http.ResponseWriter, code int, v interface{}) {
-	b, _ := json.Marshal(v)
+	b, err := json.Marshal(v)
+	if err != nil {
+		slog.Error("writeJSON: marshal failed", "error", err)
+		w.WriteHeader(http.StatusInternalServerError)
+		return
+	}
 	w.Header().Set("Content-Type", "application/json")
 	w.Header().Set("Access-Control-Allow-Origin", "*")
 	w.WriteHeader(code)

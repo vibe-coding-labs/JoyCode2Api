@@ -1,12 +1,16 @@
 package openai
 
 import (
+	"bufio"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
 	"net/http"
 	"strings"
+	"time"
 
+	"github.com/vibe-coding-labs/JoyCode2Api/pkg/common"
 	"github.com/vibe-coding-labs/JoyCode2Api/pkg/joycode"
 	"github.com/vibe-coding-labs/JoyCode2Api/pkg/store"
 )
@@ -69,8 +73,32 @@ func (s *Server) handleStreamChat(w http.ResponseWriter, r *http.Request, client
 	w.Header().Set("Access-Control-Allow-Origin", "*")
 	w.WriteHeader(200)
 
+	// Start a heartbeat goroutine. The upstream JoyCode API buffers the entire
+	// response before sending anything (TTFB can be 10–30s for reasoning models).
+	// Without keepalive, downstream clients (Claude Code, OpenAI clients) may
+	// time out or show "no response" during this gap. SSE comment lines (": ...")
+	// are part of the spec and ignored by all compliant clients.
+	stopHeartbeat := make(chan struct{})
+	go func() {
+		ticker := time.NewTicker(5 * time.Second)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-stopHeartbeat:
+				return
+			case <-ticker.C:
+				if _, err := w.Write([]byte(": keepalive\n\n")); err != nil {
+					return
+				}
+				flusher.Flush()
+			}
+		}
+	}()
+
+	streamStart := time.Now()
 	resp, err := client.PostStream("/api/saas/openai/v1/chat/completions", jcBody)
 	if err != nil {
+		close(stopHeartbeat)
 		slog.Error("chat stream upstream error", "model", model, "error", err)
 		msg := err.Error()
 		if isTimeoutError(msg) {
@@ -83,28 +111,49 @@ func (s *Server) handleStreamChat(w http.ResponseWriter, r *http.Request, client
 		return
 	}
 	defer resp.Body.Close()
+	close(stopHeartbeat)
+	slog.Info("stream: connected to upstream", "model", model, "ttfb_ms", time.Since(streamStart).Milliseconds())
 
-	// Pipe JoyCode SSE response directly — already OpenAI-compatible format
-	buf := make([]byte, 4096)
-	for {
-		n, readErr := resp.Body.Read(buf)
-		if n > 0 {
-			w.Write(buf[:n])
+	// Pipe JoyCode SSE response line-by-line — already OpenAI-compatible format.
+	// Using bufio.Scanner (not raw Read) ensures each SSE event is forwarded
+	// as soon as it arrives, without buffering multiple events into one write.
+	// Also extract usage tokens from the final chunk for dashboard stats.
+	scanner := bufio.NewScanner(resp.Body)
+	scanner.Buffer(make([]byte, 0, 64*1024), 1024*1024)
+	var inTk, outTk int
+	for scanner.Scan() {
+		line := scanner.Text()
+		if line == "" {
+			// Empty line separates SSE events; forward as-is.
+			w.Write([]byte("\n"))
 			flusher.Flush()
+			continue
 		}
-		if readErr != nil {
-				if readErr.Error() != "EOF" {
-					slog.Error("chat stream read error", "model", model, "error", readErr)
-				}
-			break
+		w.Write([]byte(line))
+		w.Write([]byte("\n"))
+		flusher.Flush()
+		// Extract usage from data lines (the final chunk carries usage stats)
+		if strings.HasPrefix(line, "data: ") && !strings.Contains(line, "[DONE]") {
+			var chunk struct {
+				Usage *struct {
+					PromptTokens     int `json:"prompt_tokens"`
+					CompletionTokens int `json:"completion_tokens"`
+				} `json:"usage"`
+			}
+			if json.Unmarshal([]byte(strings.TrimPrefix(line, "data: ")), &chunk) == nil && chunk.Usage != nil {
+				inTk = chunk.Usage.PromptTokens
+				outTk = chunk.Usage.CompletionTokens
+			}
 		}
+	}
+	if err := scanner.Err(); err != nil {
+		slog.Error("chat stream read error", "model", model, "error", err)
+	}
+	if inTk > 0 || outTk > 0 {
+		store.SetTokenUsage(r, inTk, outTk)
 	}
 }
 
 func isTimeoutError(msg string) bool {
-	lower := strings.ToLower(msg)
-	return strings.Contains(lower, "context deadline exceeded") ||
-		strings.Contains(lower, "client.timeout exceeded") ||
-		strings.Contains(lower, "deadline exceeded") ||
-		strings.Contains(lower, "i/o timeout")
+	return common.IsTimeoutError(errors.New(msg))
 }

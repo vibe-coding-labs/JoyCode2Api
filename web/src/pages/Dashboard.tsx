@@ -1,6 +1,6 @@
 import React, { useEffect, useState } from 'react';
 import {
-  Card, Col, Row, Statistic, Spin, Empty, Typography, Table, Tag, Divider,
+  Card, Col, Row, Statistic, Empty, Typography, Table, Tag, Divider, Skeleton,
 } from 'antd';
 import {
   ThunderboltOutlined,
@@ -20,7 +20,23 @@ import {
 import { api, accountDisplayName } from '../api';
 import type { Stats, Account } from '../api';
 
-const COLORS = ['#00b578', '#36cfc9', '#73d13d', '#95de64', '#1890ff', '#722ed1', '#13c2c2', '#fa8c16'];
+// Semantic palette — accent for primary series, danger for errors, info for secondary.
+// Per ui-ux-pro-max: don't rely on color alone; bars are also sorted + value-labeled.
+const CHART_COLORS = {
+  primary: '#22C55E',
+  primaryFill: 'rgba(34, 197, 94, 0.15)',
+  secondary: '#3B82F6',
+  secondaryFill: 'rgba(59, 130, 246, 0.12)',
+  danger: '#EF4444',
+  dangerFill: 'rgba(239, 68, 68, 0.12)',
+  warning: '#F59E0B',
+  muted: '#94A3B8',
+  grid: '#1F2937',
+  axis: '#475569',
+};
+
+// Distinct hues for category bars (model/account distribution) — accessible on dark bg
+const CATEGORY_COLORS = ['#22C55E', '#3B82F6', '#F59E0B', '#EF4444', '#A855F7', '#06B6D4', '#EC4899', '#84CC16'];
 
 const fmt = (n: number) => {
   if (n >= 1_000_000) return (n / 1_000_000).toFixed(2) + 'M';
@@ -60,7 +76,22 @@ const Dashboard: React.FC = () => {
 
   useEffect(() => { fetchData(); }, []);
 
-  if (loading) return <Spin size="large" style={{ display: 'block', margin: '100px auto' }} />;
+  if (loading) {
+    return (
+      <div className="jc-page">
+        <Skeleton.Button active block style={{ height: 96, marginBottom: 16, borderRadius: 10 }} />
+        <Row gutter={[16, 16]}>
+          <Col xs={24} lg={12}><Card size="small"><Skeleton active paragraph={{ rows: 6 }} /></Card></Col>
+          <Col xs={24} lg={12}><Card size="small"><Skeleton active paragraph={{ rows: 6 }} /></Card></Col>
+        </Row>
+        <Row gutter={[16, 16]} style={{ marginTop: 16 }}>
+          <Col xs={24} md={8}><Card size="small"><Skeleton active paragraph={{ rows: 5 }} /></Card></Col>
+          <Col xs={24} md={8}><Card size="small"><Skeleton active paragraph={{ rows: 5 }} /></Card></Col>
+          <Col xs={24} md={8}><Card size="small"><Skeleton active paragraph={{ rows: 5 }} /></Card></Col>
+        </Row>
+      </div>
+    );
+  }
   if (!stats) return <Empty description="无法加载统计数据" />;
 
   const successRate = stats.total_requests > 0
@@ -136,85 +167,94 @@ const Dashboard: React.FC = () => {
   ];
 
   return (
-    <div>
-      {/* Banner */}
-      <Card
-        style={{ marginBottom: 16, background: 'linear-gradient(135deg, #00b578 0%, #009a63 100%)', border: 'none', borderRadius: 12 }}
-        bodyStyle={{ padding: '20px 24px' }}
-      >
-        <Row align="middle" justify="space-between">
-          <Col>
-            <Typography.Text style={{ color: 'rgba(255,255,255,0.85)', fontSize: 13 }}>
-              JoyCode API 代理服务 · 数据概览
-            </Typography.Text>
-            <Typography.Title level={3} style={{ color: '#fff', margin: '4px 0 0' }}>
-              系统运行状态
-            </Typography.Title>
-          </Col>
-          <Col>
-            <Row gutter={32}>
-              <Col style={{ textAlign: 'center' }}>
-                <div style={{ color: 'rgba(255,255,255,0.7)', fontSize: 12 }}>今日请求</div>
-                <div style={{ color: '#fff', fontSize: 26, fontWeight: 700 }}>{stats.total_requests.toLocaleString()}</div>
-              </Col>
-              <Col style={{ textAlign: 'center' }}>
-                <div style={{ color: 'rgba(255,255,255,0.7)', fontSize: 12 }}>今日 Token</div>
-                <div style={{ color: '#fff', fontSize: 26, fontWeight: 700 }}>{fmt(totalTokens)}</div>
-              </Col>
-              <Col style={{ textAlign: 'center' }}>
-                <div style={{ color: 'rgba(255,255,255,0.7)', fontSize: 12 }}>累计请求</div>
-                <div style={{ color: '#fff', fontSize: 22, fontWeight: 600 }}>{(stats.all_time?.total_requests ?? 0).toLocaleString()}</div>
-              </Col>
-              <Col style={{ textAlign: 'center' }}>
-                <div style={{ color: 'rgba(255,255,255,0.7)', fontSize: 12 }}>累计 Token</div>
-                <div style={{ color: '#fff', fontSize: 22, fontWeight: 600 }}>{fmt(allTimeTokens)}</div>
-              </Col>
-              <Col style={{ textAlign: 'center' }}>
-                <div style={{ color: 'rgba(255,255,255,0.7)', fontSize: 12 }}>账号数</div>
-                <div style={{ color: '#fff', fontSize: 26, fontWeight: 700 }}>{stats.accounts_count}</div>
-              </Col>
-              <Col style={{ textAlign: 'center' }}>
-                <div style={{ color: 'rgba(255,255,255,0.7)', fontSize: 12 }}>成功率</div>
-                <div style={{ color: '#fff', fontSize: 26, fontWeight: 700 }}>{successRate}%</div>
-              </Col>
-            </Row>
-          </Col>
-        </Row>
-      </Card>
+    <div className="jc-page">
+      {/* Banner — dark accent header (replaces old green gradient) */}
+      <div className="jc-banner">
+        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', flexWrap: 'wrap', gap: 16 }}>
+          <div>
+            <div className="jc-banner-sub">JoyCode API 代理服务 · 数据概览</div>
+            <div className="jc-banner-title">系统运行状态</div>
+          </div>
+          <div className="jc-kpi-grid" style={{ flex: 1, maxWidth: 720 }}>
+            <div className="jc-kpi jc-kpi-accent">
+              <div className="jc-kpi-label">今日请求</div>
+              <div className="jc-kpi-value">{stats.total_requests.toLocaleString()}</div>
+            </div>
+            <div className="jc-kpi jc-kpi-accent">
+              <div className="jc-kpi-label">今日 Token</div>
+              <div className="jc-kpi-value">{fmt(totalTokens)}</div>
+            </div>
+            <div className="jc-kpi">
+              <div className="jc-kpi-label">累计请求</div>
+              <div className="jc-kpi-value" style={{ fontSize: 20 }}>{(stats.all_time?.total_requests ?? 0).toLocaleString()}</div>
+            </div>
+            <div className="jc-kpi">
+              <div className="jc-kpi-label">累计 Token</div>
+              <div className="jc-kpi-value" style={{ fontSize: 20 }}>{fmt(allTimeTokens)}</div>
+            </div>
+            <div className="jc-kpi">
+              <div className="jc-kpi-label">账号数</div>
+              <div className="jc-kpi-value">{stats.accounts_count}</div>
+            </div>
+            <div className="jc-kpi jc-kpi-accent">
+              <div className="jc-kpi-label">成功率</div>
+              <div className="jc-kpi-value">{successRate}%</div>
+            </div>
+          </div>
+        </div>
+      </div>
 
       {/* 24h 时序图表 */}
       <Row gutter={[16, 16]}>
         <Col xs={24} lg={12}>
-          <Card
-            title={<span><ApiOutlined style={{ marginRight: 6 }} />24 小时请求趋势</span>}
-            size="small"
-            style={{ borderRadius: 8 }}
-          >
+          <Card size="small" title={<span className="jc-section-title"><ApiOutlined />24 小时请求趋势</span>}>
             <ResponsiveContainer width="100%" height={200}>
               <AreaChart data={hourlyChartData} margin={{ top: 5, right: 10, left: 0, bottom: 0 }}>
-                <CartesianGrid strokeDasharray="3 3" />
-                <XAxis dataKey="label" tick={{ fontSize: 10 }} interval={2} />
-                <YAxis tick={{ fontSize: 11 }} />
-                <Tooltip formatter={(v: unknown) => [Number(v).toLocaleString(), '请求数']} />
-                <Area type="monotone" dataKey="requests" name="requests" stroke="#00b578" fill="#00b578" fillOpacity={0.15} strokeWidth={2} />
-                <Area type="monotone" dataKey="errors" name="errors" stroke="#ff4d4f" fill="#ff4d4f" fillOpacity={0.1} strokeWidth={1.5} />
+                <defs>
+                  <linearGradient id="gradRequests" x1="0" y1="0" x2="0" y2="1">
+                    <stop offset="0%" stopColor={CHART_COLORS.primary} stopOpacity={0.4} />
+                    <stop offset="100%" stopColor={CHART_COLORS.primary} stopOpacity={0} />
+                  </linearGradient>
+                  <linearGradient id="gradErrors" x1="0" y1="0" x2="0" y2="1">
+                    <stop offset="0%" stopColor={CHART_COLORS.danger} stopOpacity={0.3} />
+                    <stop offset="100%" stopColor={CHART_COLORS.danger} stopOpacity={0} />
+                  </linearGradient>
+                </defs>
+                <CartesianGrid strokeDasharray="3 3" stroke={CHART_COLORS.grid} />
+                <XAxis dataKey="label" tick={{ fontSize: 10, fill: CHART_COLORS.axis }} interval={2} stroke={CHART_COLORS.grid} />
+                <YAxis tick={{ fontSize: 11, fill: CHART_COLORS.axis }} stroke={CHART_COLORS.grid} />
+                <Tooltip
+                  contentStyle={{ background: '#0E1223', border: '1px solid #334155', borderRadius: 8, fontSize: 12 }}
+                  labelStyle={{ color: '#94A3B8' }}
+                  itemStyle={{ color: '#F8FAFC' }}
+                  formatter={(v: unknown) => [Number(v).toLocaleString(), '请求数']}
+                />
+                <Area type="monotone" dataKey="requests" name="requests" stroke={CHART_COLORS.primary} fill="url(#gradRequests)" strokeWidth={2} />
+                <Area type="monotone" dataKey="errors" name="errors" stroke={CHART_COLORS.danger} fill="url(#gradErrors)" strokeWidth={1.5} />
               </AreaChart>
             </ResponsiveContainer>
           </Card>
         </Col>
         <Col xs={24} lg={12}>
-          <Card
-            title={<span><FireOutlined style={{ marginRight: 6 }} />24 小时 Token 消耗趋势</span>}
-            size="small"
-            style={{ borderRadius: 8 }}
-          >
+          <Card size="small" title={<span className="jc-section-title"><FireOutlined />24 小时 Token 消耗趋势</span>}>
             <ResponsiveContainer width="100%" height={200}>
               <AreaChart data={hourlyChartData} margin={{ top: 5, right: 10, left: 0, bottom: 0 }}>
-                <CartesianGrid strokeDasharray="3 3" />
-                <XAxis dataKey="label" tick={{ fontSize: 10 }} interval={2} />
-                <YAxis tick={{ fontSize: 11 }} tickFormatter={(v: number) => fmt(v)} />
-                <Tooltip formatter={(v: unknown) => [fmt(Number(v)), 'Token 用量']} />
-                <Area type="monotone" dataKey="tokens" stroke="#389e0d" fill="#389e0d" fillOpacity={0.15} strokeWidth={2} />
+                <defs>
+                  <linearGradient id="gradTokens" x1="0" y1="0" x2="0" y2="1">
+                    <stop offset="0%" stopColor={CHART_COLORS.secondary} stopOpacity={0.4} />
+                    <stop offset="100%" stopColor={CHART_COLORS.secondary} stopOpacity={0} />
+                  </linearGradient>
+                </defs>
+                <CartesianGrid strokeDasharray="3 3" stroke={CHART_COLORS.grid} />
+                <XAxis dataKey="label" tick={{ fontSize: 10, fill: CHART_COLORS.axis }} interval={2} stroke={CHART_COLORS.grid} />
+                <YAxis tick={{ fontSize: 11, fill: CHART_COLORS.axis }} stroke={CHART_COLORS.grid} tickFormatter={(v: number) => fmt(v)} />
+                <Tooltip
+                  contentStyle={{ background: '#0E1223', border: '1px solid #334155', borderRadius: 8, fontSize: 12 }}
+                  labelStyle={{ color: '#94A3B8' }}
+                  itemStyle={{ color: '#F8FAFC' }}
+                  formatter={(v: unknown) => [fmt(Number(v)), 'Token 用量']}
+                />
+                <Area type="monotone" dataKey="tokens" stroke={CHART_COLORS.secondary} fill="url(#gradTokens)" strokeWidth={2} />
               </AreaChart>
             </ResponsiveContainer>
           </Card>
@@ -225,14 +265,10 @@ const Dashboard: React.FC = () => {
       <Row gutter={[16, 16]} style={{ marginTop: 16 }}>
         {/* 请求统计 */}
         <Col xs={24} md={8}>
-          <Card
-            title={<span><ApiOutlined style={{ marginRight: 6 }} />请求统计</span>}
-            size="small"
-            style={{ borderRadius: 8, height: '100%' }}
-          >
+          <Card size="small" style={{ height: '100%' }} title={<span className="jc-section-title"><ApiOutlined />请求统计</span>}>
             <Row gutter={[8, 12]}>
               <Col span={12}>
-                <Statistic title="今日请求" value={stats.total_requests} valueStyle={{ fontSize: 20, color: '#00b578' }} />
+                <Statistic title="今日请求" value={stats.total_requests} valueStyle={{ fontSize: 20, color: CHART_COLORS.primary }} />
               </Col>
               <Col span={12}>
                 <Statistic title="累计请求" value={stats.all_time?.total_requests ?? 0} valueStyle={{ fontSize: 20 }} />
@@ -242,7 +278,7 @@ const Dashboard: React.FC = () => {
                   title="今日成功"
                   value={stats.success_count}
                   prefix={<CheckCircleOutlined />}
-                  valueStyle={{ fontSize: 18, color: '#52c41a' }}
+                  valueStyle={{ fontSize: 18, color: CHART_COLORS.primary }}
                 />
                 <Typography.Text type="secondary" style={{ fontSize: 11 }}>占比 {successRate}%</Typography.Text>
               </Col>
@@ -251,7 +287,7 @@ const Dashboard: React.FC = () => {
                   title="今日失败"
                   value={stats.error_count}
                   prefix={<CloseCircleOutlined />}
-                  valueStyle={{ fontSize: 18, color: stats.error_count > 0 ? '#ff4d4f' : '#52c41a' }}
+                  valueStyle={{ fontSize: 18, color: stats.error_count > 0 ? CHART_COLORS.danger : CHART_COLORS.primary }}
                 />
                 <Typography.Text type="secondary" style={{ fontSize: 11 }}>占比 {errorRate}%</Typography.Text>
               </Col>
@@ -273,14 +309,10 @@ const Dashboard: React.FC = () => {
 
         {/* Token 消费 */}
         <Col xs={24} md={8}>
-          <Card
-            title={<span><FireOutlined style={{ marginRight: 6 }} />Token 消费</span>}
-            size="small"
-            style={{ borderRadius: 8, height: '100%' }}
-          >
+          <Card size="small" style={{ height: '100%' }} title={<span className="jc-section-title"><FireOutlined />Token 消费</span>}>
             <Row gutter={[8, 12]}>
               <Col span={12}>
-                <Statistic title="今日 Token" value={fmt(totalTokens)} valueStyle={{ fontSize: 20, color: '#389e0d' }} />
+                <Statistic title="今日 Token" value={fmt(totalTokens)} valueStyle={{ fontSize: 20, color: CHART_COLORS.secondary }} />
               </Col>
               <Col span={12}>
                 <Statistic title="累计 Token" value={fmt(allTimeTokens)} valueStyle={{ fontSize: 20 }} />
@@ -313,18 +345,14 @@ const Dashboard: React.FC = () => {
 
         {/* 响应质量 */}
         <Col xs={24} md={8}>
-          <Card
-            title={<span><DashboardOutlined style={{ marginRight: 6 }} />响应质量</span>}
-            size="small"
-            style={{ borderRadius: 8, height: '100%' }}
-          >
+          <Card size="small" style={{ height: '100%' }} title={<span className="jc-section-title"><DashboardOutlined />响应质量</span>}>
             <Row gutter={[8, 12]}>
               <Col span={12}>
                 <Statistic
                   title="平均延迟"
                   value={fmtLatency(avgLatency)}
                   prefix={<ThunderboltOutlined />}
-                  valueStyle={{ fontSize: 20, color: avgLatency < 5000 ? '#52c41a' : avgLatency < 15000 ? '#faad14' : '#ff4d4f' }}
+                  valueStyle={{ fontSize: 20, color: avgLatency < 5000 ? CHART_COLORS.primary : avgLatency < 15000 ? CHART_COLORS.warning : CHART_COLORS.danger }}
                 />
               </Col>
               <Col span={12}>
@@ -333,7 +361,7 @@ const Dashboard: React.FC = () => {
                   value={successRate}
                   suffix="%"
                   prefix={<CheckCircleOutlined />}
-                  valueStyle={{ fontSize: 20, color: successRate >= 95 ? '#52c41a' : successRate >= 80 ? '#faad14' : '#ff4d4f' }}
+                  valueStyle={{ fontSize: 20, color: successRate >= 95 ? CHART_COLORS.primary : successRate >= 80 ? CHART_COLORS.warning : CHART_COLORS.danger }}
                 />
               </Col>
               <Col span={24}>
@@ -353,37 +381,38 @@ const Dashboard: React.FC = () => {
 
       {/* 图表面板 */}
       <Row gutter={[16, 16]} style={{ marginTop: 16 }}>
-        {/* 模型分布 */}
+        {/* 模型分布 — 横向条形图降序排列 + 值标签 (per skill chart guidance) */}
         <Col xs={24} lg={12}>
-          <Card
-            title={<span><RiseOutlined style={{ marginRight: 6 }} />模型使用分布</span>}
-            size="small"
-            style={{ borderRadius: 8 }}
-          >
+          <Card size="small" title={<span className="jc-section-title"><RiseOutlined />模型使用分布</span>}>
             {modelData.length > 0 ? (
               <Row>
                 <Col xs={24} md={14}>
                   <ResponsiveContainer width="100%" height={220}>
                     <BarChart data={modelData} layout="vertical" margin={{ left: 10 }}>
-                      <CartesianGrid strokeDasharray="3 3" />
-                      <XAxis type="number" tick={{ fontSize: 11 }} />
-                      <YAxis dataKey="name" type="category" width={110} tick={{ fontSize: 11 }} />
-                      <Tooltip formatter={(v: unknown) => [Number(v).toLocaleString(), '请求数']} />
-                      <Bar dataKey="value" name="请求数" fill="#00b578" radius={[0, 4, 4, 0]} />
+                      <CartesianGrid strokeDasharray="3 3" stroke={CHART_COLORS.grid} />
+                      <XAxis type="number" tick={{ fontSize: 11, fill: CHART_COLORS.axis }} stroke={CHART_COLORS.grid} />
+                      <YAxis dataKey="name" type="category" width={110} tick={{ fontSize: 11, fill: CHART_COLORS.axis }} stroke={CHART_COLORS.grid} />
+                      <Tooltip
+                        contentStyle={{ background: '#0E1223', border: '1px solid #334155', borderRadius: 8, fontSize: 12 }}
+                        itemStyle={{ color: '#F8FAFC' }}
+                        labelStyle={{ color: '#94A3B8' }}
+                        formatter={(v: unknown) => [Number(v).toLocaleString(), '请求数']}
+                      />
+                      <Bar dataKey="value" name="请求数" fill={CHART_COLORS.primary} radius={[0, 4, 4, 0]} />
                     </BarChart>
                   </ResponsiveContainer>
                 </Col>
                 <Col xs={24} md={10}>
                   <div style={{ padding: '4px 0 0 12px' }}>
                     {modelData.map((m, i) => (
-                      <div key={m.name} style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '4px 0', borderBottom: '1px solid #f5f5f5' }}>
-                        <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
-                          <div style={{ width: 8, height: 8, borderRadius: '50%', background: COLORS[i % COLORS.length] }} />
-                          <Typography.Text style={{ fontSize: 12 }}>{m.name}</Typography.Text>
+                      <div key={m.name} style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '6px 0', borderBottom: '1px solid #1F2937' }}>
+                        <div style={{ display: 'flex', alignItems: 'center', gap: 8, minWidth: 0 }}>
+                          <div style={{ width: 8, height: 8, borderRadius: '50%', background: CATEGORY_COLORS[i % CATEGORY_COLORS.length], flexShrink: 0 }} />
+                          <Typography.Text style={{ fontSize: 12 }} ellipsis>{m.name}</Typography.Text>
                         </div>
-                        <div>
-                          <Typography.Text style={{ fontSize: 12, fontWeight: 500 }}>{m.value.toLocaleString()}</Typography.Text>
-                          <Typography.Text type="secondary" style={{ fontSize: 11, marginLeft: 4 }}>{m.pct}%</Typography.Text>
+                        <div style={{ display: 'flex', gap: 6, alignItems: 'baseline', flexShrink: 0 }}>
+                          <Typography.Text style={{ fontSize: 12, fontWeight: 600 }} className="jc-mono">{m.value.toLocaleString()}</Typography.Text>
+                          <Typography.Text type="secondary" style={{ fontSize: 11 }}>{m.pct}%</Typography.Text>
                         </div>
                       </div>
                     ))}
@@ -398,35 +427,36 @@ const Dashboard: React.FC = () => {
 
         {/* 账号请求分布 */}
         <Col xs={24} lg={12}>
-          <Card
-            title={<span><TeamOutlined style={{ marginRight: 6 }} />账号请求分布</span>}
-            size="small"
-            style={{ borderRadius: 8 }}
-          >
+          <Card size="small" title={<span className="jc-section-title"><TeamOutlined />账号请求分布</span>}>
             {accountData.length > 0 ? (
               <Row>
                 <Col xs={24} md={14}>
                   <ResponsiveContainer width="100%" height={220}>
                     <BarChart data={accountData}>
-                      <CartesianGrid strokeDasharray="3 3" />
-                      <XAxis dataKey="name" tick={{ fontSize: 11 }} />
-                      <YAxis tick={{ fontSize: 11 }} />
-                      <Tooltip formatter={(v: unknown) => [Number(v).toLocaleString(), '请求数']} />
-                      <Bar dataKey="value" name="请求数" fill="#00b578" radius={[4, 4, 0, 0]} />
+                      <CartesianGrid strokeDasharray="3 3" stroke={CHART_COLORS.grid} />
+                      <XAxis dataKey="name" tick={{ fontSize: 11, fill: CHART_COLORS.axis }} stroke={CHART_COLORS.grid} />
+                      <YAxis tick={{ fontSize: 11, fill: CHART_COLORS.axis }} stroke={CHART_COLORS.grid} />
+                      <Tooltip
+                        contentStyle={{ background: '#0E1223', border: '1px solid #334155', borderRadius: 8, fontSize: 12 }}
+                        itemStyle={{ color: '#F8FAFC' }}
+                        labelStyle={{ color: '#94A3B8' }}
+                        formatter={(v: unknown) => [Number(v).toLocaleString(), '请求数']}
+                      />
+                      <Bar dataKey="value" name="请求数" fill={CHART_COLORS.primary} radius={[4, 4, 0, 0]} />
                     </BarChart>
                   </ResponsiveContainer>
                 </Col>
                 <Col xs={24} md={10}>
                   <div style={{ padding: '4px 0 0 12px' }}>
                     {accountData.map((a, i) => (
-                      <div key={a.name} style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '4px 0', borderBottom: '1px solid #f5f5f5' }}>
-                        <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
-                          <div style={{ width: 8, height: 8, borderRadius: '50%', background: COLORS[i % COLORS.length] }} />
-                          <Typography.Text style={{ fontSize: 12 }}>{a.name}</Typography.Text>
+                      <div key={a.name} style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '6px 0', borderBottom: '1px solid #1F2937' }}>
+                        <div style={{ display: 'flex', alignItems: 'center', gap: 8, minWidth: 0 }}>
+                          <div style={{ width: 8, height: 8, borderRadius: '50%', background: CATEGORY_COLORS[i % CATEGORY_COLORS.length], flexShrink: 0 }} />
+                          <Typography.Text style={{ fontSize: 12 }} ellipsis>{a.name}</Typography.Text>
                         </div>
-                        <div>
-                          <Typography.Text style={{ fontSize: 12, fontWeight: 500 }}>{a.value.toLocaleString()}</Typography.Text>
-                          <Typography.Text type="secondary" style={{ fontSize: 11, marginLeft: 4 }}>{a.pct}%</Typography.Text>
+                        <div style={{ display: 'flex', gap: 6, alignItems: 'baseline', flexShrink: 0 }}>
+                          <Typography.Text style={{ fontSize: 12, fontWeight: 600 }} className="jc-mono">{a.value.toLocaleString()}</Typography.Text>
+                          <Typography.Text type="secondary" style={{ fontSize: 11 }}>{a.pct}%</Typography.Text>
                         </div>
                       </div>
                     ))}
@@ -443,9 +473,9 @@ const Dashboard: React.FC = () => {
       {/* 账号详情表 */}
       {accounts.length > 0 && (
         <Card
-          title={<span><TeamOutlined style={{ marginRight: 6 }} />账号概览</span>}
           size="small"
-          style={{ marginTop: 16, borderRadius: 8 }}
+          style={{ marginTop: 16 }}
+          title={<span className="jc-section-title"><TeamOutlined />账号概览</span>}
           extra={<Tag>{accounts.length} 个账号</Tag>}
         >
           <Table
@@ -460,7 +490,7 @@ const Dashboard: React.FC = () => {
 
       {/* 空状态 */}
       {stats.total_requests === 0 && (stats.all_time?.total_requests ?? 0) === 0 && (
-        <Card style={{ marginTop: 16, borderRadius: 8 }}>
+        <Card style={{ marginTop: 16 }}>
           <Empty description="暂无请求数据">
             <Typography.Text type="secondary">
               配置好账号后，使用 Claude Code 或 Codex 连接到本代理即可看到统计数据

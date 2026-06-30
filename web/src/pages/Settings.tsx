@@ -1,7 +1,7 @@
 import React, { useEffect, useState } from 'react';
 import {
   Card, Form, Input, Button, InputNumber, Select, Switch, message, Modal,
-  Spin, Typography, Space, Row, Col, Tag, Tooltip,
+  Skeleton, Space, Row, Col, Tag, Tooltip,
 } from 'antd';
 import {
   SaveOutlined, ReloadOutlined, QuestionCircleOutlined,
@@ -10,7 +10,6 @@ import {
 import { api, authApi, clearToken } from '../api';
 import type { Settings } from '../api';
 
-const { Text } = Typography;
 
 interface FieldConfig {
   key: string;
@@ -184,7 +183,18 @@ const SettingsPage: React.FC = () => {
     });
   };
 
-  if (loading) return <Spin size="large" style={{ display: 'block', margin: '100px auto' }} />;
+  if (loading) {
+    return (
+      <div className="jc-page">
+        <Skeleton.Button active block style={{ height: 80, marginBottom: 16, borderRadius: 10 }} />
+        {[1, 2, 3].map((i) => (
+          <Card key={i} size="small" style={{ marginBottom: 16 }}>
+            <Skeleton active paragraph={{ rows: 3 }} />
+          </Card>
+        ))}
+      </div>
+    );
+  }
 
   const renderField = (field: FieldConfig) => {
     const label = (
@@ -233,29 +243,15 @@ const SettingsPage: React.FC = () => {
   };
 
   return (
-    <div>
-      <Card
-        style={{
-          marginBottom: 16,
-          background: 'linear-gradient(135deg, #00b578 0%, #009a63 100%)',
-          border: 'none',
-          borderRadius: 12,
-        }}
-        styles={{ body: { padding: '20px 24px' } }}
-      >
-        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+    <div className="jc-page">
+      <div className="jc-banner">
+        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: 12 }}>
           <div>
-            <Text style={{ color: 'rgba(255,255,255,0.85)', fontSize: 13 }}>
-              JoyCode API 代理服务 · 系统设置
-            </Text>
-            <div style={{ color: '#fff', fontSize: 22, fontWeight: 700, marginTop: 4 }}>
-              代理配置管理
-            </div>
+            <div className="jc-banner-sub">JoyCode API 代理服务 · 系统设置</div>
+            <div className="jc-banner-title">代理配置管理</div>
           </div>
           <div style={{ display: 'flex', gap: 8 }}>
             <Button
-              ghost
-              style={{ color: '#fff', borderColor: 'rgba(255,255,255,0.4)' }}
               icon={<ReloadOutlined />}
               onClick={fetchSettings}
             >
@@ -263,18 +259,15 @@ const SettingsPage: React.FC = () => {
             </Button>
           </div>
         </div>
-      </Card>
+      </div>
 
       <Form form={form} layout="vertical" onFinish={handleSave}>
         {FIELD_GROUPS.map((group) => (
           <Card
             key={group.title}
-            title={<Text strong style={{ fontSize: 15 }}>{group.title}</Text>}
-            style={{ marginBottom: 16, borderRadius: 8, border: '1px solid #f0f0f0' }}
-            styles={{ body: { padding: '20px 24px' } }}
-            extra={
-              <SettingOutlined style={{ color: '#00b578' }} />
-            }
+            size="small"
+            style={{ marginBottom: 16 }}
+            title={<span className="jc-section-title"><SettingOutlined />{group.title}</span>}
           >
             <Row gutter={[24, 0]}>
               {group.fields.map((field) => (
@@ -287,10 +280,9 @@ const SettingsPage: React.FC = () => {
         ))}
 
         <Card
-          title={<Text strong style={{ fontSize: 15 }}>安全设置</Text>}
-          style={{ marginBottom: 16, borderRadius: 8, border: '1px solid #f0f0f0' }}
-          styles={{ body: { padding: '20px 24px' } }}
-          extra={<SettingOutlined style={{ color: '#00b578' }} />}
+          size="small"
+          style={{ marginBottom: 16 }}
+          title={<span className="jc-section-title"><LockOutlined />安全设置</span>}
         >
           <Form form={pwForm} layout="vertical" onFinish={handleChangePassword}>
             <Row gutter={[24, 0]}>
@@ -328,7 +320,6 @@ const SettingsPage: React.FC = () => {
               htmlType="submit"
               loading={changePwLoading}
               icon={<LockOutlined />}
-              style={{ borderRadius: 6 }}
             >
               修改密码
             </Button>
@@ -342,7 +333,6 @@ const SettingsPage: React.FC = () => {
             loading={saving}
             icon={<SaveOutlined />}
             size="large"
-            style={{ borderRadius: 6 }}
           >
             保存设置
           </Button>

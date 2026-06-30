@@ -1,5 +1,5 @@
 import React, { useEffect, useState } from 'react';
-import { Button, Card, Typography, Alert } from 'antd';
+import { Button, Typography, Alert } from 'antd';
 import { ArrowLeftOutlined } from '@ant-design/icons';
 import { Link } from 'react-router-dom';
 import { authApi } from '../api';
@@ -88,17 +88,8 @@ const ForgotPasswordPage: React.FC = () => {
   }, []);
 
   return (
-    <div style={{
-      minHeight: '100vh',
-      display: 'flex',
-      alignItems: 'center',
-      justifyContent: 'center',
-      background: 'linear-gradient(135deg, #00b578 0%, #009a63 100%)',
-    }}>
-      <Card
-        style={{ width: 640, borderRadius: 12, boxShadow: '0 8px 24px rgba(0,0,0,0.12)' }}
-        styles={{ body: { padding: 32 } }}
-      >
+    <div className="jc-auth-bg">
+      <div className="jc-auth-card" style={{ width: 660 }}>
         <Title level={3} style={{ marginBottom: 8 }}>忘记密码</Title>
         <Paragraph type="secondary" style={{ marginBottom: 24 }}>
           Dashboard 的 root 密码需要通过服务器命令行重置。
@@ -130,11 +121,11 @@ const ForgotPasswordPage: React.FC = () => {
         />
 
         <Link to="/login">
-          <Button icon={<ArrowLeftOutlined />} type="primary" ghost style={{ borderRadius: 6 }}>
+          <Button icon={<ArrowLeftOutlined />} type="primary" ghost>
             返回登录
           </Button>
         </Link>
-      </Card>
+      </div>
     </div>
   );
 };

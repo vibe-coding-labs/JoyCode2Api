@@ -1,5 +1,5 @@
 import React from 'react';
-import { Button, Card, Typography } from 'antd';
+import { Button, Typography } from 'antd';
 import { CloseCircleOutlined, LoginOutlined, HomeOutlined } from '@ant-design/icons';
 import { useNavigate, useSearchParams } from 'react-router-dom';
 
@@ -11,32 +11,27 @@ const OAuthError: React.FC = () => {
   const error = searchParams.get('error') || '未知错误';
 
   return (
-    <div style={{
-      minHeight: '100vh',
-      display: 'flex',
-      justifyContent: 'center',
-      alignItems: 'center',
-      background: '#f0f2f5',
-    }}>
-      <Card style={{ width: 480, textAlign: 'center', borderRadius: 12 }}>
-        <CloseCircleOutlined style={{ fontSize: 64, color: '#ff4d4f', marginBottom: 16 }} />
+    <div className="jc-auth-bg">
+      <div className="jc-auth-card" style={{ width: 500, textAlign: 'center' }}>
+        <div className="jc-auth-logo" style={{ background: 'linear-gradient(135deg, #EF4444, #DC2626)', boxShadow: '0 8px 20px rgba(239, 68, 68, 0.25)' }}>
+          <CloseCircleOutlined style={{ fontSize: 26, color: '#fff' }} />
+        </div>
         <Title level={3}>OAuth 授权失败</Title>
         <Paragraph type="secondary" style={{ fontSize: 14 }}>
           授权过程中发生错误，账号未能添加成功。
         </Paragraph>
-        <Card
-          size="small"
-          style={{
-            background: '#fff2f0',
-            border: '1px solid #ffccc7',
-            marginBottom: 24,
-            textAlign: 'left',
-          }}
-        >
+        <div style={{
+          background: 'rgba(239, 68, 68, 0.08)',
+          border: '1px solid rgba(239, 68, 68, 0.3)',
+          borderRadius: 8,
+          padding: '12px 16px',
+          marginBottom: 24,
+          textAlign: 'left',
+        }}>
           <Text type="danger" style={{ fontSize: 13, wordBreak: 'break-all' }}>
             {error}
           </Text>
-        </Card>
+        </div>
         <div style={{ display: 'flex', gap: 12, justifyContent: 'center' }}>
           <Button
             icon={<LoginOutlined />}
@@ -52,7 +47,7 @@ const OAuthError: React.FC = () => {
             返回首页
           </Button>
         </div>
-      </Card>
+      </div>
     </div>
   );
 };

@@ -4,7 +4,7 @@ import {
   message, Popconfirm, Tag, Typography, Alert, Tooltip, Spin,
 } from 'antd';
 import {
-  PlusOutlined, DeleteOutlined, StarOutlined,
+  PlusOutlined, DeleteOutlined, StarOutlined, StarFilled,
   SafetyCertificateOutlined, ReloadOutlined,
   QuestionCircleOutlined, ClearOutlined, EditOutlined,
   CheckCircleOutlined, CloseCircleOutlined, ClockCircleOutlined,
@@ -58,12 +58,6 @@ const claudeDockerHint = [
 ].join('\n');
 
 const getBaseURL = () => `${window.location.protocol}//${window.location.host}`;
-
-const maskUserId = (id: string): string => {
-  if (!id) return '-';
-  if (id.length <= 3) return id[0] + '***';
-  return id.slice(0, 2) + '***' + id.slice(-2);
-};
 
 const fmtTokens = (n: number): string => {
   if (n >= 1_000_000) return (n / 1_000_000).toFixed(1) + 'M';
@@ -292,7 +286,7 @@ const Accounts: React.FC = () => {
     {
       title: '',
       key: 'drag',
-      width: 40,
+      width: 36,
       render: (_: unknown, record: Account) => <DragHandle id={record.user_id} />,
     },
     {
@@ -303,7 +297,14 @@ const Accounts: React.FC = () => {
       ellipsis: true,
       render: (_: unknown, record: Account) => (
         <Tooltip title={accountDisplayName(record)} placement="topLeft">
-          <Typography.Text strong>{accountDisplayName(record)}</Typography.Text>
+          <Space size={6} style={{ minWidth: 0 }}>
+            {record.is_default && (
+              <StarFilled style={{ color: '#22C55E', fontSize: 13, flexShrink: 0 }} />
+            )}
+            <Typography.Text strong ellipsis style={{ minWidth: 0 }}>
+              {accountDisplayName(record)}
+            </Typography.Text>
+          </Space>
         </Tooltip>
       ),
     },
@@ -311,7 +312,7 @@ const Accounts: React.FC = () => {
       title: 'API Token',
       dataIndex: 'api_token',
       key: 'api_token',
-      width: 180,
+      width: 160,
       render: (token: string) => (
         <Typography.Text code copyable style={{ fontSize: 12 }}>
           {token.slice(0, 12)}...{token.slice(-4)}
@@ -319,19 +320,10 @@ const Accounts: React.FC = () => {
       ),
     },
     {
-      title: '用户 ID',
-      dataIndex: 'user_id',
-      key: 'user_id_uid',
-      width: 120,
-      render: (text: string) => (
-        <Typography.Text type="secondary" style={{ fontSize: 13 }}>{maskUserId(text)}</Typography.Text>
-      ),
-    },
-    {
       title: '活跃会话',
       dataIndex: 'active_sessions',
       key: 'active_sessions',
-      width: 100,
+      width: 88,
       render: (val: number) => val > 0 ? (
         <Tag color="blue">{val} 个活跃</Tag>
       ) : (
@@ -367,7 +359,7 @@ const Accounts: React.FC = () => {
     {
       title: '凭证状态',
       key: 'credential_status',
-      width: 100,
+      width: 96,
       render: (_: unknown, record: Account) => {
         const cv = record.credential_valid;
         if (cv === 1) {
@@ -386,29 +378,23 @@ const Accounts: React.FC = () => {
         }
         return (
           <Tooltip title="keepalive 将在启动后 10 分钟内完成首次检测">
-            <Tag color="processing" icon={<ClockCircleOutlined />}>首次检测中</Tag>
+            <Tag color="processing" icon={<ClockCircleOutlined />}>检测中</Tag>
           </Tooltip>
         );
       },
     },
     {
-      title: '状态',
-      dataIndex: 'is_default',
-      key: 'is_default',
-      width: 100,
-      render: (val: boolean) => val ? <Tag color="blue"><StarOutlined /> 默认账号</Tag> : null,
-    },
-    {
       title: '默认模型',
       dataIndex: 'default_model',
       key: 'default_model',
-      width: 150,
-      render: (val: string) => val ? <Tag color="green">{val}</Tag> : <Typography.Text type="secondary">未设置</Typography.Text>,
+      width: 130,
+      ellipsis: true,
+      render: (val: string) => val ? <Tag color="green" style={{ maxWidth: '100%' }}>{val}</Tag> : <Typography.Text type="secondary">未设置</Typography.Text>,
     },
     {
       title: '快速启动',
       key: 'quickstart',
-      width: 90,
+      width: 76,
       render: (_: unknown, record: Account) => {
         const claudeCmd = claudeCodeCmd(record.api_token, record.default_model || undefined);
         const cxCmd = codexCmd(record.api_token, record.default_model || undefined);
@@ -437,41 +423,69 @@ const Accounts: React.FC = () => {
     {
       title: '操作',
       key: 'actions',
+      width: 168,
       render: (_: unknown, record: Account) => (
-        <Space>
-          <Button size="small" onClick={(e) => {
-            e.stopPropagation();
-            setRenameTarget(record.user_id);
-            renameForm.setFieldsValue({ new_name: record.remark || accountDisplayName(record) });
-            setRenameModalOpen(true);
-          }}>
-            <EditOutlined /> 备注
-          </Button>
+        <Space size={2}>
+          <Tooltip title="修改备注">
+            <Button
+              size="small"
+              type="text"
+              icon={<EditOutlined />}
+              onClick={(e) => {
+                e.stopPropagation();
+                setRenameTarget(record.user_id);
+                renameForm.setFieldsValue({ new_name: record.remark || accountDisplayName(record) });
+                setRenameModalOpen(true);
+              }}
+            />
+          </Tooltip>
           {!record.is_default && (
-            <Button size="small" onClick={(e) => { e.stopPropagation(); handleSetDefault(record.user_id, accountDisplayName(record)); }}>
-              <StarOutlined /> 设为默认
-            </Button>
+            <Tooltip title="设为默认账号">
+              <Button
+                size="small"
+                type="text"
+                icon={<StarOutlined />}
+                onClick={(e) => { e.stopPropagation(); handleSetDefault(record.user_id, accountDisplayName(record)); }}
+              />
+            </Tooltip>
           )}
+          <Tooltip title="验证凭证">
+            <Button
+              size="small"
+              type="text"
+              icon={<SafetyCertificateOutlined />}
+              loading={validating === record.user_id}
+              onClick={(e) => { e.stopPropagation(); handleValidate(record.user_id, accountDisplayName(record)); }}
+            />
+          </Tooltip>
           <Popconfirm
             title="确定要重置 API Token 吗？"
             description="重置后旧 Token 将立即失效"
             onConfirm={() => handleRenewToken(record.user_id)}
           >
-            <Button size="small" onClick={(e) => e.stopPropagation()}>重置 Token</Button>
+            <Tooltip title="重置 API Token">
+              <Button
+                size="small"
+                type="text"
+                icon={<ReloadOutlined />}
+                onClick={(e) => e.stopPropagation()}
+              />
+            </Tooltip>
           </Popconfirm>
-          <Button
-            size="small"
-            onClick={(e) => { e.stopPropagation(); handleValidate(record.user_id, accountDisplayName(record)); }}
-            loading={validating === record.user_id}
-          >
-            <SafetyCertificateOutlined /> 验证
-          </Button>
           <Popconfirm
             title={`确定要删除账号「${accountDisplayName(record)}」吗？`}
             description="删除后使用该密钥的客户端将无法访问"
             onConfirm={() => handleRemove(record.user_id, accountDisplayName(record))}
           >
-            <Button size="small" danger onClick={(e) => e.stopPropagation()}><DeleteOutlined /> 删除</Button>
+            <Tooltip title="删除账号">
+              <Button
+                size="small"
+                type="text"
+                danger
+                icon={<DeleteOutlined />}
+                onClick={(e) => e.stopPropagation()}
+              />
+            </Tooltip>
           </Popconfirm>
         </Space>
       ),
@@ -479,10 +493,10 @@ const Accounts: React.FC = () => {
   ];
 
   return (
-    <div>
-      <div style={{ marginBottom: 16, display: 'flex', justifyContent: 'space-between' }}>
+    <div className="jc-page">
+      <div style={{ marginBottom: 16, display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: 12 }}>
         <Typography.Title level={4} style={{ margin: 0 }}>账号管理</Typography.Title>
-        <Space>
+        <Space wrap>
           <Button onClick={fetchAccounts} icon={<ReloadOutlined />}>刷新</Button>
           <Button
             onClick={async () => {
@@ -632,6 +646,8 @@ const Accounts: React.FC = () => {
             rowKey="user_id"
             loading={loading}
             pagination={false}
+            scroll={{ x: 1080 }}
+            size="small"
             components={{
               body: {
                 row: DraggableRow,

@@ -1,15 +1,641 @@
+/* JoyCode2Api Dashboard — Data-Dense Dark Theme
+ * Based on ui-ux-pro-max "Analytics Dashboard" recommendation:
+ *   bg #020617 · card #0E1223 · fg #F8FAFC · accent #22C55E
+ * Font: Fira Sans (UI) + Fira Code (data/API keys) per skill typography guidance.
+ */
+
+@import url('https://fonts.googleapis.com/css2?family=Fira+Code:wght@400;500;600&family=Fira+Sans:wght@300;400;500;600;700&display=swap');
+
+:root {
+  --jc-bg:          #020617;
+  --jc-bg-elevated: #0E1223;
+  --jc-bg-muted:    #1A1E2F;
+  --jc-fg:          #F8FAFC;
+  --jc-fg-muted:    #94A3B8;
+  --jc-border:      #334155;
+  --jc-border-soft: #1F2937;
+  --jc-accent:      #22C55E;
+  --jc-accent-soft: #16A34A;
+  --jc-danger:      #EF4444;
+  --jc-warning:     #F59E0B;
+  --jc-info:        #3B82F6;
+  --jc-radius:      10px;
+  --jc-shadow:      0 1px 3px rgba(0,0,0,0.4), 0 1px 2px rgba(0,0,0,0.3);
+  --jc-shadow-lg:   0 10px 30px rgba(0,0,0,0.5);
+  --jc-transition:  200ms ease;
+}
+
 body {
   margin: 0;
-  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+  font-family: 'Fira Sans', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+  background: var(--jc-bg);
+  color: var(--jc-fg);
+  font-size: 14px;
+  line-height: 1.5;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
 }
 
 #root {
   min-height: 100vh;
 }
 
-/* Override Sider collapse trigger to white background */
+/* Monospace for technical data: API keys, token counts, model names, code blocks */
+code, pre, .ant-typography code, .jc-mono {
+  font-family: 'Fira Code', 'SF Mono', Menlo, monospace !important;
+}
+
+/* ─── Layout overrides ─────────────────────────────────────────── */
+
+/* Sider — dark elevated surface */
+.ant-layout-sider {
+  background: var(--jc-bg-elevated) !important;
+  border-right: 1px solid var(--jc-border-soft) !important;
+}
+
 .ant-layout-sider-trigger {
-  background: #fff !important;
-  border-top: 1px solid #f0f0f0;
-  color: rgba(0, 0, 0, 0.65) !important;
+  background: var(--jc-bg-elevated) !important;
+  border-top: 1px solid var(--jc-border-soft) !important;
+  color: var(--jc-fg-muted) !important;
+  transition: color var(--jc-transition);
+}
+
+.ant-layout-sider-trigger:hover {
+  color: var(--jc-fg) !important;
+}
+
+/* Header — dark elevated surface */
+.ant-layout-header {
+  background: var(--jc-bg-elevated) !important;
+  border-bottom: 1px solid var(--jc-border-soft) !important;
+  padding: 0 24px !important;
+  height: 56px !important;
+  line-height: 56px !important;
+}
+
+/* Content area background */
+.ant-layout-content {
+  background: var(--jc-bg);
+}
+
+/* ─── Card — dark elevated surface with subtle border ─────────── */
+
+.ant-card {
+  background: var(--jc-bg-elevated) !important;
+  border: 1px solid var(--jc-border-soft) !important;
+  border-radius: var(--jc-radius) !important;
+  transition: border-color var(--jc-transition), box-shadow var(--jc-transition);
+}
+
+.ant-card:hover {
+  border-color: var(--jc-border) !important;
+}
+
+.ant-card-head {
+  border-bottom: 1px solid var(--jc-border-soft) !important;
+  color: var(--jc-fg) !important;
+  min-height: 44px !important;
+  padding: 0 16px !important;
+}
+
+.ant-card-head-title {
+  color: var(--jc-fg) !important;
+  font-weight: 600 !important;
+  font-size: 14px !important;
+}
+
+.ant-card-body {
+  padding: 16px !important;
+}
+
+/* ─── Menu — dark sidebar nav ─────────────────────────────────── */
+
+.ant-menu {
+  background: transparent !important;
+  border-right: none !important;
+}
+
+.ant-menu-item {
+  color: var(--jc-fg-muted) !important;
+  transition: all var(--jc-transition) !important;
+  border-radius: 8px !important;
+  margin: 4px 8px !important;
+  width: calc(100% - 16px) !important;
+}
+
+.ant-menu-item:hover {
+  color: var(--jc-fg) !important;
+  background: var(--jc-bg-muted) !important;
+}
+
+.ant-menu-item-selected {
+  color: var(--jc-accent) !important;
+  background: rgba(34, 197, 94, 0.12) !important;
+  font-weight: 500;
+}
+
+.ant-menu-item-selected::after {
+  display: none !important;
+}
+
+/* ─── Table — dark theme ──────────────────────────────────────── */
+
+.ant-table {
+  background: transparent !important;
+  color: var(--jc-fg) !important;
+}
+
+.ant-table-thead > tr > th {
+  background: var(--jc-bg-muted) !important;
+  border-bottom: 1px solid var(--jc-border-soft) !important;
+  color: var(--jc-fg-muted) !important;
+  font-weight: 500 !important;
+  font-size: 12px !important;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+}
+
+.ant-table-tbody > tr > td {
+  border-bottom: 1px solid var(--jc-border-soft) !important;
+  color: var(--jc-fg) !important;
+  transition: background var(--jc-transition);
+}
+
+.ant-table-tbody > tr:hover > td {
+  background: var(--jc-bg-muted) !important;
+}
+
+.ant-table-tbody > tr.ant-table-row-selected > td {
+  background: rgba(34, 197, 94, 0.08) !important;
+}
+
+/* ─── Form controls — dark inputs ─────────────────────────────── */
+
+.ant-input,
+.ant-input-affix-wrapper,
+.ant-input-number,
+.ant-input-number-affix-wrapper,
+.ant-select .ant-select-selector,
+.ant-picker {
+  background: var(--jc-bg-muted) !important;
+  border-color: var(--jc-border) !important;
+  color: var(--jc-fg) !important;
+  transition: border-color var(--jc-transition);
+}
+
+.ant-input:hover,
+.ant-input-affix-wrapper:hover,
+.ant-input-number:hover,
+.ant-select:not(.ant-select-disabled):hover .ant-select-selector {
+  border-color: var(--jc-accent) !important;
+}
+
+.ant-input:focus,
+.ant-input-affix-wrapper-focused,
+.ant-input-number-focused,
+.ant-select-focused .ant-select-selector {
+  border-color: var(--jc-accent) !important;
+  box-shadow: 0 0 0 2px rgba(34, 197, 94, 0.15) !important;
+}
+
+.ant-input::placeholder,
+.ant-input-affix-wrapper input::placeholder {
+  color: var(--jc-fg-muted) !important;
+  opacity: 0.6;
+}
+
+/* Select dropdown */
+.ant-select-dropdown {
+  background: var(--jc-bg-elevated) !important;
+  border: 1px solid var(--jc-border) !important;
+}
+
+.ant-select-item {
+  color: var(--jc-fg) !important;
+}
+
+.ant-select-item-option-active {
+  background: var(--jc-bg-muted) !important;
+}
+
+.ant-select-item-option-selected {
+  background: rgba(34, 197, 94, 0.15) !important;
+  color: var(--jc-accent) !important;
+  font-weight: 500;
+}
+
+/* ─── Buttons — dark theme with accent CTA ────────────────────── */
+
+.ant-btn {
+  border-radius: 6px !important;
+  transition: all var(--jc-transition) !important;
+  font-weight: 500;
+}
+
+.ant-btn-primary {
+  background: var(--jc-accent) !important;
+  border-color: var(--jc-accent) !important;
+  color: #052e16 !important;
+  font-weight: 600;
+}
+
+.ant-btn-primary:hover:not(:disabled) {
+  background: var(--jc-accent-soft) !important;
+  border-color: var(--jc-accent-soft) !important;
+  transform: translateY(-1px);
+  box-shadow: 0 4px 12px rgba(34, 197, 94, 0.3);
+}
+
+.ant-btn-default {
+  background: var(--jc-bg-muted) !important;
+  border-color: var(--jc-border) !important;
+  color: var(--jc-fg) !important;
+}
+
+.ant-btn-default:hover:not(:disabled) {
+  border-color: var(--jc-accent) !important;
+  color: var(--jc-accent) !important;
+}
+
+.ant-btn-text {
+  color: var(--jc-fg-muted) !important;
+}
+
+.ant-btn-text:hover:not(:disabled) {
+  background: var(--jc-bg-muted) !important;
+  color: var(--jc-fg) !important;
+}
+
+.ant-btn-dangerous {
+  border-color: var(--jc-danger) !important;
+  color: var(--jc-danger) !important;
+}
+
+.ant-btn-dangerous:hover {
+  background: var(--jc-danger) !important;
+  color: #fff !important;
+}
+
+/* ─── Tags — subtle dark backgrounds ──────────────────────────── */
+
+.ant-tag {
+  border-radius: 4px !important;
+  font-size: 11px !important;
+  padding: 1px 8px !important;
+  border: none !important;
+  font-weight: 500;
+}
+
+.ant-tag-success {
+  background: rgba(34, 197, 94, 0.15) !important;
+  color: var(--jc-accent) !important;
+}
+
+.ant-tag-error {
+  background: rgba(239, 68, 68, 0.15) !important;
+  color: var(--jc-danger) !important;
+}
+
+.ant-tag-warning {
+  background: rgba(245, 158, 11, 0.15) !important;
+  color: var(--jc-warning) !important;
+}
+
+.ant-tag-processing,
+.ant-tag-blue {
+  background: rgba(59, 130, 246, 0.15) !important;
+  color: var(--jc-info) !important;
+}
+
+.ant-tag-green {
+  background: rgba(34, 197, 94, 0.15) !important;
+  color: var(--jc-accent) !important;
+}
+
+.ant-tag-default {
+  background: var(--jc-bg-muted) !important;
+  color: var(--jc-fg-muted) !important;
+}
+
+/* ─── Statistic — large data display ──────────────────────────── */
+
+.ant-statistic-title {
+  color: var(--jc-fg-muted) !important;
+  font-size: 11px !important;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  margin-bottom: 4px !important;
+}
+
+.ant-statistic-content {
+  color: var(--jc-fg) !important;
+  font-family: 'Fira Code', monospace !important;
+  font-weight: 600 !important;
+}
+
+/* ─── Typography ──────────────────────────────────────────────── */
+
+.ant-typography {
+  color: var(--jc-fg) !important;
+}
+
+.ant-typography-secondary {
+  color: var(--jc-fg-muted) !important;
+}
+
+/* ─── Modal — dark dialog ─────────────────────────────────────── */
+
+.ant-modal-content,
+.ant-modal-header {
+  background: var(--jc-bg-elevated) !important;
+  border: 1px solid var(--jc-border-soft) !important;
+}
+
+.ant-modal-title {
+  color: var(--jc-fg) !important;
+}
+
+.ant-modal-close-icon {
+  color: var(--jc-fg-muted) !important;
+}
+
+/* ─── Alert — dark subtle backgrounds ─────────────────────────── */
+
+.ant-alert {
+  border-radius: 8px !important;
+  border: 1px solid !important;
+}
+
+.ant-alert-info {
+  background: rgba(59, 130, 246, 0.08) !important;
+  border-color: rgba(59, 130, 246, 0.3) !important;
+}
+
+.ant-alert-warning {
+  background: rgba(245, 158, 11, 0.08) !important;
+  border-color: rgba(245, 158, 11, 0.3) !important;
+}
+
+.ant-alert-error {
+  background: rgba(239, 68, 68, 0.08) !important;
+  border-color: rgba(239, 68, 68, 0.3) !important;
+}
+
+.ant-alert-success {
+  background: rgba(34, 197, 94, 0.08) !important;
+  border-color: rgba(34, 197, 94, 0.3) !important;
+}
+
+/* ─── Skeleton — dark shimmer ─────────────────────────────────── */
+
+.ant-skeleton-element .ant-skeleton-input {
+  background: var(--jc-bg-muted) !important;
+}
+
+.ant-skeleton-content .ant-skeleton-title,
+.ant-skeleton-content .ant-skeleton-paragraph > li {
+  background: var(--jc-bg-muted) !important;
+}
+
+/* ─── Spin — accent color ─────────────────────────────────────── */
+
+.ant-spin-dot-item {
+  background-color: var(--jc-accent) !important;
+}
+
+/* ─── Tooltip — dark popover ──────────────────────────────────── */
+
+.ant-tooltip-inner {
+  background: var(--jc-bg-elevated) !important;
+  border: 1px solid var(--jc-border) !important;
+  color: var(--jc-fg) !important;
+  font-size: 12px !important;
+}
+
+.ant-tooltip-arrow::before {
+  background: var(--jc-bg-elevated) !important;
+}
+
+/* ─── Popover ─────────────────────────────────────────────────── */
+
+.ant-popover-inner {
+  background: var(--jc-bg-elevated) !important;
+  border: 1px solid var(--jc-border) !important;
+}
+
+.ant-popover-title {
+  color: var(--jc-fg) !important;
+  border-bottom: 1px solid var(--jc-border-soft) !important;
+}
+
+/* ─── Popconfirm ──────────────────────────────────────────────── */
+
+.ant-popconfirm .ant-popover-inner-content {
+  color: var(--jc-fg) !important;
+}
+
+/* ─── Segmented — dark toggle ─────────────────────────────────── */
+
+.ant-segmented {
+  background: var(--jc-bg-muted) !important;
+  padding: 2px !important;
+}
+
+.ant-segmented-item {
+  color: var(--jc-fg-muted) !important;
+  transition: all var(--jc-transition);
+}
+
+.ant-segmented-item-selected {
+  color: var(--jc-fg) !important;
+  background: var(--jc-bg-elevated) !important;
+  box-shadow: var(--jc-shadow);
+}
+
+/* ─── Badge ───────────────────────────────────────────────────── */
+
+.ant-badge-status-processing .ant-badge-status-dot {
+  background: var(--jc-accent) !important;
+}
+
+/* ─── Divider ─────────────────────────────────────────────────── */
+
+.ant-divider {
+  border-color: var(--jc-border-soft) !important;
+}
+
+/* ─── Scrollbar — dark themed ─────────────────────────────────── */
+
+::-webkit-scrollbar {
+  width: 10px;
+  height: 10px;
+}
+
+::-webkit-scrollbar-track {
+  background: var(--jc-bg);
+}
+
+::-webkit-scrollbar-thumb {
+  background: var(--jc-border);
+  border-radius: 5px;
+  border: 2px solid var(--jc-bg);
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: var(--jc-fg-muted);
+}
+
+/* ─── Focus visible — keyboard navigation (a11y) ──────────────── */
+
+*:focus-visible {
+  outline: 2px solid var(--jc-accent) !important;
+  outline-offset: 2px;
+}
+
+/* ─── Reduced motion ──────────────────────────────────────────── */
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+  }
+}
+
+/* ─── Utility classes ─────────────────────────────────────────── */
+
+.jc-page {
+  padding: 20px 24px;
+}
+
+.jc-kpi-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+  gap: 12px;
+}
+
+.jc-kpi {
+  background: var(--jc-bg-elevated);
+  border: 1px solid var(--jc-border-soft);
+  border-radius: var(--jc-radius);
+  padding: 14px 16px;
+  transition: border-color var(--jc-transition);
+}
+
+.jc-kpi:hover {
+  border-color: var(--jc-border);
+}
+
+.jc-kpi-label {
+  color: var(--jc-fg-muted);
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  margin-bottom: 6px;
+}
+
+.jc-kpi-value {
+  color: var(--jc-fg);
+  font-family: 'Fira Code', monospace;
+  font-size: 24px;
+  font-weight: 600;
+  line-height: 1.2;
+}
+
+.jc-kpi-sub {
+  color: var(--jc-fg-muted);
+  font-size: 11px;
+  margin-top: 4px;
+}
+
+.jc-kpi-accent .jc-kpi-value {
+  color: var(--jc-accent);
+}
+
+.jc-section-title {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  color: var(--jc-fg);
+  font-size: 14px;
+  font-weight: 600;
+}
+
+.jc-section-title .anticon {
+  color: var(--jc-accent);
+}
+
+/* Code preview block — terminal-like */
+.jc-code-block {
+  background: #0a0e1a;
+  border: 1px solid var(--jc-border-soft);
+  border-radius: 6px;
+  padding: 12px 14px;
+  font-family: 'Fira Code', monospace;
+  font-size: 12px;
+  line-height: 1.7;
+  color: #cdd6f4;
+  white-space: pre-wrap;
+  word-break: break-all;
+  overflow: auto;
+}
+
+/* Auth pages (Login/Setup/ForgotPassword) — dark gradient backdrop */
+.jc-auth-bg {
+  min-height: 100vh;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background:
+    radial-gradient(ellipse at top left, rgba(34, 197, 94, 0.08), transparent 50%),
+    radial-gradient(ellipse at bottom right, rgba(59, 130, 246, 0.06), transparent 50%),
+    var(--jc-bg);
+  position: relative;
+}
+
+.jc-auth-card {
+  width: 420px;
+  background: var(--jc-bg-elevated);
+  border: 1px solid var(--jc-border-soft);
+  border-radius: 14px;
+  box-shadow: var(--jc-shadow-lg);
+  padding: 36px;
+}
+
+.jc-auth-logo {
+  width: 48px;
+  height: 48px;
+  border-radius: 12px;
+  background: linear-gradient(135deg, var(--jc-accent), var(--jc-accent-soft));
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  margin: 0 auto 16px;
+  box-shadow: 0 8px 20px rgba(34, 197, 94, 0.25);
+}
+
+/* Banner — replaces the old green gradient with a dark accent header */
+.jc-banner {
+  background:
+    radial-gradient(ellipse at top right, rgba(34, 197, 94, 0.08), transparent 60%),
+    var(--jc-bg-elevated);
+  border: 1px solid var(--jc-border-soft);
+  border-radius: var(--jc-radius);
+  padding: 20px 24px;
+  margin-bottom: 16px;
+}
+
+.jc-banner-title {
+  color: var(--jc-fg);
+  font-size: 20px;
+  font-weight: 600;
+  margin: 0;
+}
+
+.jc-banner-sub {
+  color: var(--jc-fg-muted);
+  font-size: 12px;
+  margin-top: 2px;
 }

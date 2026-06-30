@@ -1,5 +1,5 @@
 import React, { useEffect, useState } from 'react';
-import { Form, Input, Button, Card, message, Typography, Tooltip } from 'antd';
+import { Form, Input, Button, message, Typography, Tooltip } from 'antd';
 import { LockOutlined, UserOutlined, QuestionCircleOutlined, GithubOutlined, StarFilled } from '@ant-design/icons';
 import { useNavigate, Link } from 'react-router-dom';
 import { authApi, setToken, api } from '../api';
@@ -30,14 +30,7 @@ const LoginPage: React.FC = () => {
   };
 
   return (
-    <div style={{
-      minHeight: '100vh',
-      display: 'flex',
-      alignItems: 'center',
-      justifyContent: 'center',
-      background: 'linear-gradient(135deg, #00b578 0%, #009a63 100%)',
-      position: 'relative',
-    }}>
+    <div className="jc-auth-bg">
       <Tooltip title="去 GitHub Star 支持我们">
         <a
           href="https://github.com/vibe-coding-labs/JoyCode2Api"
@@ -50,29 +43,29 @@ const LoginPage: React.FC = () => {
             display: 'flex',
             alignItems: 'center',
             gap: 6,
-            color: 'rgba(255,255,255,0.85)',
+            color: 'rgba(248, 250, 252, 0.7)',
             fontSize: 13,
             textDecoration: 'none',
-            transition: 'color 0.2s',
+            transition: 'color 200ms ease',
           }}
-          onMouseEnter={e => (e.currentTarget.style.color = '#fff')}
-          onMouseLeave={e => (e.currentTarget.style.color = 'rgba(255,255,255,0.85)')}
+          onMouseEnter={e => (e.currentTarget.style.color = '#F8FAFC')}
+          onMouseLeave={e => (e.currentTarget.style.color = 'rgba(248, 250, 252, 0.7)')}
         >
           <GithubOutlined style={{ fontSize: 18 }} />
           GitHub
           {stars !== null && (
             <span style={{ display: 'inline-flex', alignItems: 'center', gap: 3, marginLeft: 2 }}>
-              <StarFilled style={{ fontSize: 13, color: '#faad14' }} />
+              <StarFilled style={{ fontSize: 13, color: '#F59E0B' }} />
               <span style={{ fontSize: 12 }}>{stars.toLocaleString()}</span>
             </span>
           )}
         </a>
       </Tooltip>
-      <Card
-        style={{ width: 400, borderRadius: 12, boxShadow: '0 8px 24px rgba(0,0,0,0.12)' }}
-        styles={{ body: { padding: 32 } }}
-      >
-        <div style={{ textAlign: 'center', marginBottom: 24 }}>
+      <div className="jc-auth-card">
+        <div className="jc-auth-logo">
+          <img src="/favicon.ico" alt="JoyCode" style={{ width: 28, height: 28, filter: 'brightness(0) invert(1)' }} />
+        </div>
+        <div style={{ textAlign: 'center', marginBottom: 28 }}>
           <Title level={3} style={{ marginBottom: 4 }}>JoyCode 代理</Title>
           <Text type="secondary">请输入 root 密码登录</Text>
         </div>
@@ -92,7 +85,7 @@ const LoginPage: React.FC = () => {
               htmlType="submit"
               loading={loading}
               block
-              style={{ borderRadius: 6, height: 44 }}
+              style={{ height: 44 }}
             >
               登录
             </Button>
@@ -101,13 +94,13 @@ const LoginPage: React.FC = () => {
         <div style={{ textAlign: 'center', marginTop: 16 }}>
           <Link
             to="/forgot-password"
-            style={{ color: '#999', fontSize: 13, display: 'inline-flex', alignItems: 'center', gap: 4 }}
+            style={{ color: '#94A3B8', fontSize: 13, display: 'inline-flex', alignItems: 'center', gap: 4, transition: 'color 200ms ease' }}
           >
             <QuestionCircleOutlined />
             忘记密码？
           </Link>
         </div>
-      </Card>
+      </div>
     </div>
   );
 };

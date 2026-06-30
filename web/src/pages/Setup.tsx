@@ -1,5 +1,5 @@
 import React, { useState } from 'react';
-import { Form, Input, Button, Card, message, Typography, Progress } from 'antd';
+import { Form, Input, Button, message, Typography, Progress } from 'antd';
 import { LockOutlined, CheckCircleOutlined } from '@ant-design/icons';
 import { useNavigate } from 'react-router-dom';
 import { authApi, setToken } from '../api';
@@ -35,19 +35,12 @@ const SetupPage: React.FC = () => {
   };
 
   return (
-    <div style={{
-      minHeight: '100vh',
-      display: 'flex',
-      alignItems: 'center',
-      justifyContent: 'center',
-      background: 'linear-gradient(135deg, #00b578 0%, #009a63 100%)',
-    }}>
-      <Card
-        style={{ width: 440, borderRadius: 12, boxShadow: '0 8px 24px rgba(0,0,0,0.12)' }}
-        styles={{ body: { padding: 32 } }}
-      >
+    <div className="jc-auth-bg">
+      <div className="jc-auth-card" style={{ width: 460 }}>
+        <div className="jc-auth-logo">
+          <CheckCircleOutlined style={{ fontSize: 26, color: '#052e16' }} />
+        </div>
         <div style={{ textAlign: 'center', marginBottom: 24 }}>
-          <CheckCircleOutlined style={{ fontSize: 40, color: '#00b578', marginBottom: 8 }} />
           <Title level={3} style={{ marginBottom: 4 }}>初始化 JoyCode 代理</Title>
           <Text type="secondary">首次使用，请设置 root 管理员密码</Text>
         </div>
@@ -56,7 +49,7 @@ const SetupPage: React.FC = () => {
             {({ getFieldValue }) => {
               const pw = getFieldValue('password') || '';
               const strength = getPasswordStrength(pw);
-              const color = strength <= 25 ? '#ff4d4f' : strength <= 50 ? '#faad14' : strength <= 75 ? '#52c41a' : '#00b578';
+              const color = strength <= 25 ? '#EF4444' : strength <= 50 ? '#F59E0B' : strength <= 75 ? '#22C55E' : '#16A34A';
               const label = strength <= 25 ? '弱' : strength <= 50 ? '中' : strength <= 75 ? '强' : '很强';
               return pw ? (
                 <div style={{ marginTop: -8, marginBottom: 16 }}>
@@ -97,13 +90,13 @@ const SetupPage: React.FC = () => {
               htmlType="submit"
               loading={loading}
               block
-              style={{ borderRadius: 6, height: 44 }}
+              style={{ height: 44 }}
             >
               设置密码并登录
             </Button>
           </Form.Item>
         </Form>
-      </Card>
+      </div>
     </div>
   );
 };

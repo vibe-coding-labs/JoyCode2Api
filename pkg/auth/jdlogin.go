@@ -92,15 +92,18 @@ func QRInit() (sessionID, qrImageBase64 string, err error) {
 	client := &http.Client{Jar: jar, Timeout: 30 * time.Second}
 
 	reqURL := fmt.Sprintf(qrShowURL, time.Now().UnixMilli())
-	req, _ := http.NewRequest("GET", reqURL, nil)
+	req, err := http.NewRequest("GET", reqURL, nil)
+	if err != nil {
+		return "", "", fmt.Errorf("create QR request: %w", err)
+	}
 	req.Header.Set("User-Agent", jdUserAgent)
 	req.Header.Set("Referer", "https://passport.jd.com/new/login.aspx")
 	resp, err := client.Do(req)
 	if err != nil {
 		return "", "", fmt.Errorf("request QR code: %w", err)
 	}
+	defer resp.Body.Close()
 	pngData, err := io.ReadAll(resp.Body)
-	resp.Body.Close()
 	if err != nil {
 		return "", "", fmt.Errorf("read QR image: %w", err)
 	}
@@ -143,7 +146,10 @@ func QRPollStatus(sessionID string) (status string, result *QRLoginResult, err e
 	}
 
 	reqURL := fmt.Sprintf(qrCheckURL, url.QueryEscape(session.Token), time.Now().UnixMilli())
-	req, _ := http.NewRequest("GET", reqURL, nil)
+	req, err := http.NewRequest("GET", reqURL, nil)
+	if err != nil {
+		return "error", nil, fmt.Errorf("create qr-check request: %w", err)
+	}
 	req.Header.Set("User-Agent", jdUserAgent)
 	req.Header.Set("Referer", "https://passport.jd.com/new/login.aspx")
 	resp, err := session.client.Do(req)
@@ -151,8 +157,11 @@ func QRPollStatus(sessionID string) (status string, result *QRLoginResult, err e
 		slog.Error("qr-check request failed", "session", sessionID, "error", err)
 		return "error", nil, err
 	}
-	body, _ := io.ReadAll(resp.Body)
-	resp.Body.Close()
+	defer resp.Body.Close()
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return "error", nil, fmt.Errorf("read qr-check response: %w", err)
+	}
 
 	str := string(body)
 	start := strings.Index(str, "(")
@@ -245,7 +254,10 @@ func dumpAllCookies(jar http.CookieJar) {
 
 func validateAndFetchInfo(client *http.Client, ticket string) (*QRLoginResult, error) {
 	reqURL := fmt.Sprintf(qrValidURL, url.QueryEscape(ticket))
-	req, _ := http.NewRequest("GET", reqURL, nil)
+	req, err := http.NewRequest("GET", reqURL, nil)
+	if err != nil {
+		return nil, fmt.Errorf("create qr-validate request: %w", err)
+	}
 	req.Header.Set("User-Agent", jdUserAgent)
 	req.Header.Set("Referer", "https://passport.jd.com/new/login.aspx")
 
@@ -268,8 +280,11 @@ func validateAndFetchInfo(client *http.Client, ticket string) (*QRLoginResult, e
 	if err != nil {
 		return nil, fmt.Errorf("validate ticket: %w", err)
 	}
-	body, _ := io.ReadAll(resp.Body)
-	resp.Body.Close()
+	defer resp.Body.Close()
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil, fmt.Errorf("read qr-validate response: %w", err)
+	}
 
 	slog.Info("qr-validate response", "status", resp.StatusCode, "redirects", len(redirectChain), "body", string(body[:minInt(len(body), 500)]))
 	slog.Info("qr-validate resp-headers", "set-cookie", resp.Header.Values("Set-Cookie"))
@@ -311,16 +326,20 @@ func validateAndFetchInfo(client *http.Client, ticket string) (*QRLoginResult, e
 		if strings.HasPrefix(followURL, "http://") {
 			followURL = "https://" + followURL[7:]
 		}
-		rReq, _ := http.NewRequest("GET", followURL, nil)
-		rReq.Header.Set("User-Agent", jdUserAgent)
-		rReq.Header.Set("Referer", "https://passport.jd.com/new/login.aspx")
-		rReq.Header.Set("Accept", "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8")
-		rResp, err := client.Do(rReq)
+		rReq, err := http.NewRequest("GET", followURL, nil)
 		if err != nil {
-			slog.Warn("qr-validate URL follow failed", "error", err)
+			slog.Warn("qr-validate follow request creation failed", "url", followURL, "error", err)
 		} else {
-			slog.Info("qr-validate URL resp", "status", rResp.StatusCode, "set-cookie", rResp.Header.Values("Set-Cookie"))
-			rResp.Body.Close()
+			rReq.Header.Set("User-Agent", jdUserAgent)
+			rReq.Header.Set("Referer", "https://passport.jd.com/new/login.aspx")
+			rReq.Header.Set("Accept", "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8")
+			rResp, err := client.Do(rReq)
+			if err != nil {
+				slog.Warn("qr-validate URL follow failed", "error", err)
+			} else {
+				slog.Info("qr-validate URL resp", "status", rResp.StatusCode, "set-cookie", rResp.Header.Values("Set-Cookie"))
+				rResp.Body.Close()
+			}
 		}
 		ptKey, ptPin = extractPtKey(client.Jar)
 	}

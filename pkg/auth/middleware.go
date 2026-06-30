@@ -2,6 +2,7 @@ package auth
 
 import (
 	"context"
+	"encoding/json"
 	"log/slog"
 	"net/http"
 	"strings"
@@ -85,7 +86,11 @@ func writeAuthError(w http.ResponseWriter, msg string) {
 	w.Header().Set("Content-Type", "application/json")
 	w.Header().Set("Access-Control-Allow-Origin", "*")
 	w.WriteHeader(http.StatusUnauthorized)
-	w.Write([]byte(`{"detail":"` + msg + `"}`))
+	// Use json.Marshal so msg is properly escaped (avoids JSON injection if
+	// msg ever contains quotes/backslashes).
+	if data, err := json.Marshal(map[string]string{"detail": msg}); err == nil {
+		w.Write(data)
+	}
 }
 
 func AuthenticatedUser(r *http.Request) string {

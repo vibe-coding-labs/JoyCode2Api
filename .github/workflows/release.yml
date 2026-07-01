@@ -1,0 +1,155 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Release tag (e.g. v0.7.0)'
+        required: true
+
+permissions:
+  contents: write
+
+env:
+  BINARY_NAME: JoyCode2Api
+
+jobs:
+  build-frontend:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.inputs.tag || github.ref }}
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+          cache-dependency-path: web/package-lock.json
+
+      - name: Build frontend
+        working-directory: web
+        run: |
+          npm ci
+          npm run build
+
+      - name: Verify frontend output
+        run: test -f cmd/JoyCode2Api/static/index.html
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: frontend-static
+          path: cmd/JoyCode2Api/static/
+          retention-days: 1
+
+  build-binaries:
+    needs: build-frontend
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        include:
+          - goos: darwin
+            goarch: arm64
+            suffix: darwin-arm64
+          - goos: darwin
+            goarch: amd64
+            suffix: darwin-amd64
+          - goos: linux
+            goarch: amd64
+            suffix: linux-amd64
+          - goos: windows
+            goarch: amd64
+            suffix: windows-amd64
+            ext: .exe
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.inputs.tag || github.ref }}
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: frontend-static
+          path: cmd/JoyCode2Api/static/
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.25'
+
+      - name: Resolve version
+        id: version
+        run: |
+          TAG="${{ github.event.inputs.tag || github.ref_name }}"
+          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+          echo "num=${TAG#v}" >> "$GITHUB_OUTPUT"
+
+      - name: Build ${{ matrix.suffix }}
+        env:
+          CGO_ENABLED: '0'
+          GOOS: ${{ matrix.goos }}
+          GOARCH: ${{ matrix.goarch }}
+        run: |
+          go build -trimpath \
+            -ldflags "-s -w -X main.Version=${{ steps.version.outputs.num }}" \
+            -o "dist/${{ env.BINARY_NAME }}-${{ matrix.suffix }}${{ matrix.ext }}" \
+            ./cmd/JoyCode2Api/
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: binary-${{ matrix.suffix }}
+          path: dist/
+          retention-days: 1
+
+  release:
+    needs: build-binaries
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: binary-*
+          path: dist/
+          merge-multiple: true
+
+      - name: Generate checksums
+        working-directory: dist
+        run: sha256sum ${{ env.BINARY_NAME }}-* > checksums-sha256.txt
+
+      - name: Resolve version
+        id: version
+        run: |
+          TAG="${{ github.event.inputs.tag || github.ref_name }}"
+          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ steps.version.outputs.tag }}
+          name: "${{ env.BINARY_NAME }} ${{ steps.version.outputs.tag }}"
+          body: |
+            ## ${{ env.BINARY_NAME }} ${{ steps.version.outputs.tag }}
+
+            ### Downloads
+            | Platform | File |
+            |----------|------|
+            | macOS (Apple Silicon) | `${{ env.BINARY_NAME }}-darwin-arm64` |
+            | macOS (Intel) | `${{ env.BINARY_NAME }}-darwin-amd64` |
+            | Linux (x86_64) | `${{ env.BINARY_NAME }}-linux-amd64` |
+            | Windows (x86_64) | `${{ env.BINARY_NAME }}-windows-amd64.exe` |
+
+            ### Quick Start
+            ```bash
+            # macOS / Linux
+            chmod +x JoyCode2Api-<platform>
+            ./JoyCode2Api-<platform> serve
+
+            # Windows
+            JoyCode2Api-windows-amd64.exe serve
+            ```
+
+            ### Verify checksum
+            ```bash
+            sha256sum -c checksums-sha256.txt
+            ```
+          files: dist/*

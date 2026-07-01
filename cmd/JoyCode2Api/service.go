@@ -13,7 +13,7 @@ const (
 var serviceCmd = &cobra.Command{
 	Use:     "service",
 	Short:   "管理后台服务（安装/卸载/状态）",
-	Long:    "将 JoyCode Proxy 安装为系统后台服务，支持开机自启和崩溃自动重启。自动适配 macOS (launchd) 和 Linux (systemd)。",
+	Long:    "将 JoyCode Proxy 安装为系统后台服务，支持开机自启和崩溃自动重启。自动适配 macOS (launchd)、Linux (systemd) 和 Windows (NSSM)。",
 	GroupID: "service",
 }
 
